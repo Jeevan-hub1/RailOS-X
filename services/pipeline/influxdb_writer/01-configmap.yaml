@@ -1,0 +1,27 @@
+---
+# InfluxDB Writer Service — ConfigMap
+#
+# Satisfies:
+#   - Req 1 C4:  Write every validated event to InfluxDB 3.0; measurement per sensorType
+#   - Req 1 C5:  3-retry back-off; STORAGE_WRITE_FAILURE on exhaustion
+#   - Design §4.2: InfluxDB Writer subscribes to validated Kafka topics
+#
+# INFLUXDB_TOKEN must be injected from a Kubernetes Secret (not stored here).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: influxdb-writer-config
+  namespace: railos
+  labels:
+    app: influxdb-writer
+    app.kubernetes.io/name: influxdb-writer
+    app.kubernetes.io/component: storage-writer
+    app.kubernetes.io/part-of: railos-pilot
+data:
+  INFLUXDB_URL: "http://influxdb-primary.railos.svc.cluster.local:8086"
+  INFLUXDB_ORG: "railos"
+  INFLUXDB_BUCKET: "sensor-events"
+  KAFKA_BOOTSTRAP_SERVERS: "kafka-0.kafka-headless.railos.svc.cluster.local:9092,kafka-1.kafka-headless.railos.svc.cluster.local:9092,kafka-2.kafka-headless.railos.svc.cluster.local:9092"
+  KAFKA_GROUP_ID: "railos-influxdb-writer"
+  METRICS_PORT: "8000"
+  FAILURE_QUEUE_PATH: "/data/failure_queue.db"

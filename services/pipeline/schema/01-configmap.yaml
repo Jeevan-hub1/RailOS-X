@@ -1,0 +1,23 @@
+---
+# Schema Registry Client — ConfigMap
+#
+# Satisfies:
+#   - Req 1 C2:  All sensor events must conform to the canonical schema (Design §4.3)
+#   - Req 1 C3:  Invalid events routed to dead-letter.schema-failures
+#   - Design §4.3: Apicurio Registry stores the canonical JSON Schema artifact
+#
+# SCHEMA_REGISTRY_URL points to the Apicurio Registry instance in the railos namespace.
+# SCHEMA_NAME is the Apicurio artifact ID (group=railos) used for registration and lookup.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: schema-registry-client-config
+  namespace: railos
+  labels:
+    app: schema-registry-client
+    app.kubernetes.io/name: schema-registry-client
+    app.kubernetes.io/component: schema-management
+    app.kubernetes.io/part-of: railos-pilot
+data:
+  SCHEMA_REGISTRY_URL: "http://apicurio.railos.svc.cluster.local:8080"
+  SCHEMA_NAME: "railos.sensor.event"

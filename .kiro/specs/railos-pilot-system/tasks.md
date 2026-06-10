@@ -115,127 +115,127 @@ Estimated implementation phases:
   - [x] 2.4 Implement `CLOCK_UNRELIABLE` flag injection into sensor event canonical schema when sync is lost
   - [x] 2.5 Write integration test: simulate clock source failure, verify all subsequent events carry `CLOCK_UNRELIABLE` flag
 
-- [ ] 3. Legacy System Adapters
-  - [ ] 3.1 Implement NTES REST adapter service: polls NTES HTTP API every 30s, transforms to canonical train.telemetry.position events
-  - [ ] 3.2 Implement OMRS stream adapter service: subscribes to OMRS proprietary stream, transforms to train.telemetry.omrs events
-  - [ ] 3.3 Implement WILD stream adapter service: subscribes to WILD serial/TCP feed, transforms to train.telemetry.wild events
-  - [ ] 3.4 Implement dead-letter routing: on 3 consecutive parse failures, emit `LEGACY_ADAPTER_FAILURE` alert and route raw payload to dead-letter.adapter-failures topic
-  - [ ] 3.5 Expose adapter software version as Prometheus label `adapter_version` on each adapter's metrics endpoint
-  - [ ] 3.6 Package each adapter as an independently deployable container (no shared process with Data_Pipeline core)
-  - [ ] 3.7 Write unit tests for each adapter using recorded real-format payload fixtures (NTES, OMRS, WILD)
+- [x] 3. Legacy System Adapters
+  - [x] 3.1 Implement NTES REST adapter service: polls NTES HTTP API every 30s, transforms to canonical train.telemetry.position events
+  - [x] 3.2 Implement OMRS stream adapter service: subscribes to OMRS proprietary stream, transforms to train.telemetry.omrs events
+  - [x] 3.3 Implement WILD stream adapter service: subscribes to WILD serial/TCP feed, transforms to train.telemetry.wild events
+  - [x] 3.4 Implement dead-letter routing: on 3 consecutive parse failures, emit `LEGACY_ADAPTER_FAILURE` alert and route raw payload to dead-letter.adapter-failures topic
+  - [x] 3.5 Expose adapter software version as Prometheus label `adapter_version` on each adapter's metrics endpoint
+  - [x] 3.6 Package each adapter as an independently deployable container (no shared process with Data_Pipeline core)
+  - [x] 3.7 Write unit tests for each adapter using recorded real-format payload fixtures (NTES, OMRS, WILD)
 
-- [ ] 4. Data Pipeline (Kafka + Flink + Storage)
+- [x] 4. Data Pipeline (Kafka + Flink + Storage)
   - [x] 4.1 Create all Kafka topics per §4.1 of design (track.sensor.*, train.telemetry.*, vision.defect.*, signaling.state, monitoring.alerts.*, dead-letter.*, audit.*)
-  - [ ] 4.2 Implement canonical sensor event JSON schema (§4.3) with schema registry (Confluent Schema Registry or Apicurio)
-  - [ ] 4.3 Implement schema validation Flink operator: valid events → destination topic; invalid → dead-letter.schema-failures + `SCHEMA_VALIDATION_FAILURE` alert
-  - [ ] 4.4 Implement InfluxDB writer with 3-retry exponential back-off; emit `STORAGE_WRITE_FAILURE` on exhaustion without silently discarding events
-  - [ ] 4.5 Implement 90-day retention policy on InfluxDB raw sensor events; archive to Delta Lake on expiry
-  - [ ] 4.6 Implement Flink stream processing jobs: sensor feature extraction, stream joins (sensor + train position + weather), anomaly rule evaluation
-  - [ ] 4.7 Implement feed heartbeat watchdog: emit `FEED_UNAVAILABLE` when no heartbeat for ≥10s, maintain 500ms normalization SLA on remaining feeds
+  - [x] 4.2 Implement canonical sensor event JSON schema (§4.3) with schema registry (Confluent Schema Registry or Apicurio)
+  - [x] 4.3 Implement schema validation Flink operator: valid events → destination topic; invalid → dead-letter.schema-failures + `SCHEMA_VALIDATION_FAILURE` alert
+  - [x] 4.4 Implement InfluxDB writer with 3-retry exponential back-off; emit `STORAGE_WRITE_FAILURE` on exhaustion without silently discarding events
+  - [x] 4.5 Implement 90-day retention policy on InfluxDB raw sensor events; archive to Delta Lake on expiry
+  - [x] 4.6 Implement Flink stream processing jobs: sensor feature extraction, stream joins (sensor + train position + weather), anomaly rule evaluation
+  - [x] 4.7 Implement feed heartbeat watchdog: emit `FEED_UNAVAILABLE` when no heartbeat for ≥10s, maintain 500ms normalization SLA on remaining feeds
   - [x] 4.8 Implement throughput test harness: verify sustained 10,000 events/s ingestion across all active sensor feeds
-  - [ ] 4.9 Implement Delta Lake compaction and Parquet partitioning by zone, date, and sensor type for efficient ML training queries
+  - [x] 4.9 Implement Delta Lake compaction and Parquet partitioning by zone, date, and sensor type for efficient ML training queries
 
-- [ ] 5. Edge Node Software Stack
-  - [ ] 5.1 Implement heartbeat watchdog FSM (Connected → Autonomous → Reconnecting) with 3-failure/30s detection threshold
-  - [ ] 5.2 Implement local NVMe event buffer: circular write with overflow log, minimum 24h capacity management
-  - [ ] 5.3 Implement reconnection upload protocol: timestamp-ordered upload with per-record ACK, 3-retry/60s per record, continue-on-failure
-  - [ ] 5.4 Implement non-volatile model weight store: persist active model weights and TensorRT inference runtime to NVMe; verify cold-restart resumes inference without central connectivity
-  - [ ] 5.5 Implement `STORAGE_THRESHOLD` alerter: at 90% capacity, attempt SMS gateway → local console → audit log + 5-min retry loop
-  - [ ] 5.6 Package edge software stack as container images (containerd runtime, Ubuntu 22.04 LTS base)
+- [x] 5. Edge Node Software Stack
+  - [x] 5.1 Implement heartbeat watchdog FSM (Connected → Autonomous → Reconnecting) with 3-failure/30s detection threshold
+  - [x] 5.2 Implement local NVMe event buffer: circular write with overflow log, minimum 24h capacity management
+  - [x] 5.3 Implement reconnection upload protocol: timestamp-ordered upload with per-record ACK, 3-retry/60s per record, continue-on-failure
+  - [x] 5.4 Implement non-volatile model weight store: persist active model weights and TensorRT inference runtime to NVMe; verify cold-restart resumes inference without central connectivity
+  - [x] 5.5 Implement `STORAGE_THRESHOLD` alerter: at 90% capacity, attempt SMS gateway → local console → audit log + 5-min retry loop
+  - [x] 5.6 Package edge software stack as container images (containerd runtime, Ubuntu 22.04 LTS base)
 
-- [ ] 6. Track Defect Detector
-  - [ ] 6.1 Collect and label corridor track defect image dataset: minimum 500 labeled images per Defect_Category (crack, flaking, fastener_loose, spalling), 80/20 train/held-out split
-  - [ ] 6.2 Fine-tune YOLOv8n on IR corridor defect dataset via transfer learning from COCO pretrained weights
-  - [ ] 6.3 Export model to TensorRT INT8 quantized engine targeting Jetson Orin NX; verify 100ms inference latency budget
-  - [ ] 6.4 Implement Grad-CAM heatmap generation (same latency budget as primary inference); store artifact with alert ID reference
-  - [ ] 6.5 Implement depth estimation branch: when stereo/structured-light feed available, output depth in mm (±5mm accuracy)
-  - [ ] 6.6 Implement `DEFECT_ALERT` event producer: emit per §6.1 schema to vision.defect.alerts topic regardless of confidence score
-  - [ ] 6.7 Implement confidence threshold gate: confidence < 0.70 → set `REQUIRES_HUMAN_REVIEW` flag; suppress maintenance dispatch pending OC review
-  - [ ] 6.8 Implement 4-hour review escalation timer: unreviewed `REQUIRES_HUMAN_REVIEW` alerts escalated to secondary OC after 4h
-  - [ ] 6.9 Implement SHAP/Grad-CAM feature attribution: top-3 contributing features in plain-language IR domain terminology
-  - [ ] 6.10 Run benchmark: verify ≥90% precision and ≥90% recall per Defect_Category on held-out 20% test split
+- [x] 6. Track Defect Detector
+  - [x] 6.1 Collect and label corridor track defect image dataset: minimum 500 labeled images per Defect_Category (crack, flaking, fastener_loose, spalling), 80/20 train/held-out split
+  - [x] 6.2 Fine-tune YOLOv8n on IR corridor defect dataset via transfer learning from COCO pretrained weights
+  - [x] 6.3 Export model to TensorRT INT8 quantized engine targeting Jetson Orin NX; verify 100ms inference latency budget
+  - [x] 6.4 Implement Grad-CAM heatmap generation (same latency budget as primary inference); store artifact with alert ID reference
+  - [x] 6.5 Implement depth estimation branch: when stereo/structured-light feed available, output depth in mm (±5mm accuracy)
+  - [x] 6.6 Implement `DEFECT_ALERT` event producer: emit per §6.1 schema to vision.defect.alerts topic regardless of confidence score
+  - [x] 6.7 Implement confidence threshold gate: confidence < 0.70 → set `REQUIRES_HUMAN_REVIEW` flag; suppress maintenance dispatch pending OC review
+  - [x] 6.8 Implement 4-hour review escalation timer: unreviewed `REQUIRES_HUMAN_REVIEW` alerts escalated to secondary OC after 4h
+  - [x] 6.9 Implement SHAP/Grad-CAM feature attribution: top-3 contributing features in plain-language IR domain terminology
+  - [x] 6.10 Run benchmark: verify ≥90% precision and ≥90% recall per Defect_Category on held-out 20% test split
 
-- [ ] 7. Predictive Maintenance Engine
-  - [ ] 7.1 Implement 30-minute rolling window feature extractor: 8 features (vibration_rms, kurtosis, peak, temperature, wheel_load_left, wheel_load_right, acoustic_rms, speed) at 1Hz from OMRS/WILD Kafka topics
-  - [ ] 7.2 Train 2-layer LSTM(128) model with dropout=0.0 at inference (deterministic); wrap with MAPIE ConformalRegressor for calibrated 90% confidence intervals
-  - [ ] 7.3 Implement linear interpolation for gaps ≤40%: track interpolation percentage, set `DATA_QUALITY` flag in output
-  - [ ] 7.4 Implement `INSUFFICIENT_DATA` path: if interpolation >40%, withhold score, emit advisory to Data_Pipeline and Digital_Twin with no score field
-  - [ ] 7.5 Implement CI width enforcement: verify width(p) ≥ width(0%) × (1 + p/20) for p ∈ (0%, 40%]; assert finite non-zero CI for all valid windows
-  - [ ] 7.6 Implement `MAINTENANCE_ADVISORY` event producer: emit per §6.2 schema when failure_probability > 0.80
-  - [ ] 7.7 Implement SHAP value computation for top-3 feature attribution with plain-language IR terminology mapping
-  - [ ] 7.8 Run benchmark: verify deterministic inference (identical output for identical input), calibration error, and CI coverage
+- [x] 7. Predictive Maintenance Engine
+  - [x] 7.1 Implement 30-minute rolling window feature extractor: 8 features (vibration_rms, kurtosis, peak, temperature, wheel_load_left, wheel_load_right, acoustic_rms, speed) at 1Hz from OMRS/WILD Kafka topics
+  - [x] 7.2 Train 2-layer LSTM(128) model with dropout=0.0 at inference (deterministic); wrap with MAPIE ConformalRegressor for calibrated 90% confidence intervals
+  - [x] 7.3 Implement linear interpolation for gaps ≤40%: track interpolation percentage, set `DATA_QUALITY` flag in output
+  - [x] 7.4 Implement `INSUFFICIENT_DATA` path: if interpolation >40%, withhold score, emit advisory to Data_Pipeline and Digital_Twin with no score field
+  - [x] 7.5 Implement CI width enforcement: verify width(p) ≥ width(0%) × (1 + p/20) for p ∈ (0%, 40%]; assert finite non-zero CI for all valid windows
+  - [x] 7.6 Implement `MAINTENANCE_ADVISORY` event producer: emit per §6.2 schema when failure_probability > 0.80
+  - [x] 7.7 Implement SHAP value computation for top-3 feature attribution with plain-language IR terminology mapping
+  - [x] 7.8 Run benchmark: verify deterministic inference (identical output for identical input), calibration error, and CI coverage
 
-- [ ] 8. GNN Delay Predictor
-  - [ ] 8.1 Build Corridor graph dataset: extract station, train, and segment nodes from NTES + IR GIS data; construct heterogeneous edges per §6.3 design
-  - [ ] 8.2 Implement HetGNN-SAGE model: 2 message-passing layers (128 hidden units), heterogeneous linear transforms per edge type, per-Train output head
-  - [ ] 8.3 Wrap model with MAPIE conformal predictor to produce 90% prediction interval (lower + upper bounds in minutes)
-  - [ ] 8.4 Implement NTES snapshot consumer: update graph every 5 minutes from Kafka train.telemetry.position topic; 2s inference latency budget
-  - [ ] 8.5 Implement `STALE_INPUT` flag: detect NTES feed lag >60s, flag all outputs and propagate flag in REST response body
-  - [ ] 8.6 Implement REST endpoint `POST /api/v1/delay-predictor/forecast`: return per-train delay forecasts with PI; HTTP 400 with field-level error on malformed input
-  - [ ] 8.7 Run graceful degradation benchmark: measure MAE on 12-month vs 3-month training data; verify MAE increase ≤15%
+- [x] 8. GNN Delay Predictor
+  - [x] 8.1 Build Corridor graph dataset: extract station, train, and segment nodes from NTES + IR GIS data; construct heterogeneous edges per §6.3 design
+  - [x] 8.2 Implement HetGNN-SAGE model: 2 message-passing layers (128 hidden units), heterogeneous linear transforms per edge type, per-Train output head
+  - [x] 8.3 Wrap model with MAPIE conformal predictor to produce 90% prediction interval (lower + upper bounds in minutes)
+  - [x] 8.4 Implement NTES snapshot consumer: update graph every 5 minutes from Kafka train.telemetry.position topic; 2s inference latency budget
+  - [x] 8.5 Implement `STALE_INPUT` flag: detect NTES feed lag >60s, flag all outputs and propagate flag in REST response body
+  - [x] 8.6 Implement REST endpoint `POST /api/v1/delay-predictor/forecast`: return per-train delay forecasts with PI; HTTP 400 with field-level error on malformed input
+  - [x] 8.7 Run graceful degradation benchmark: measure MAE on 12-month vs 3-month training data; verify MAE increase ≤15%
 
-- [ ] 9. Federated Learning Layer
-  - [ ] 9.1 Set up Flower (flwr) server on zone compute node with FedAvg strategy configuration
-  - [ ] 9.2 Implement 5 simulated Edge_Node FL clients with partitioned local datasets (non-IID splits by geographic zone/climate type)
-  - [ ] 9.3 Integrate Opacus differential privacy: Gaussian noise with configurable σ ∈ [0.0, 10.0] applied to client gradients before upload
-  - [ ] 9.4 Implement round protocol: 120s client timeout; proceed with ≥3 respondents; abort and emit `ROUND_ABORTED` if <3 respond
-  - [ ] 9.5 Implement global model quality check: after aggregation, verify global_loss ≤ worst local validation loss across participating nodes
-  - [ ] 9.6 Implement new-node join protocol: initialize new node with current global weights (gRPC with checksum verification) before first round participation; log `INITIALIZATION_FAILURE` and exclude node from next round if transfer fails/times out in 120s
-  - [ ] 9.7 Implement gradient transmission protocol: verify only weight deltas (no raw sensor data) leave Edge_Node
-  - [ ] 9.8 Write FL round integration test: simulate client failures mid-round; verify 3-client minimum enforcement and `ROUND_ABORTED` emission
+- [x] 9. Federated Learning Layer
+  - [x] 9.1 Set up Flower (flwr) server on zone compute node with FedAvg strategy configuration
+  - [x] 9.2 Implement 5 simulated Edge_Node FL clients with partitioned local datasets (non-IID splits by geographic zone/climate type)
+  - [x] 9.3 Integrate Opacus differential privacy: Gaussian noise with configurable σ ∈ [0.0, 10.0] applied to client gradients before upload
+  - [x] 9.4 Implement round protocol: 120s client timeout; proceed with ≥3 respondents; abort and emit `ROUND_ABORTED` if <3 respond
+  - [x] 9.5 Implement global model quality check: after aggregation, verify global_loss ≤ worst local validation loss across participating nodes
+  - [x] 9.6 Implement new-node join protocol: initialize new node with current global weights (gRPC with checksum verification) before first round participation; log `INITIALIZATION_FAILURE` and exclude node from next round if transfer fails/times out in 120s
+  - [x] 9.7 Implement gradient transmission protocol: verify only weight deltas (no raw sensor data) leave Edge_Node
+  - [x] 9.8 Write FL round integration test: simulate client failures mid-round; verify 3-client minimum enforcement and `ROUND_ABORTED` emission
 
-- [ ] 10. MARL Train Scheduler
-  - [ ] 10.1 Configure Flatland-RL environment to represent Corridor topology: map IR stations and track segments to Flatland grid topology
-  - [ ] 10.2 Train PPO agent (Stable Baselines3, MLP actor/critic 256×256) on Flatland Corridor environment; reward: minimize total passenger delay with Conflict penalty
-  - [ ] 10.3 Implement conflict-free constraint layer: post-process every proposed action set, check segment occupation time windows for overlap, reject any action that creates a Conflict before output
-  - [ ] 10.4 Implement 30s hard timeout: if no conflict-free proposal found within 30s, emit `NO_FEASIBLE_PROPOSAL` to Operations_Controller within 35s
-  - [ ] 10.5 Implement rejection loop: alternative proposals must differ in assignment pattern from rejected proposal; after 3 consecutive rejections emit `SCHEDULING_ESCALATION`
-  - [ ] 10.6 Implement rescheduling proposal JSON producer: emit per §6.5 schema to scheduling.proposals Kafka topic
-  - [ ] 10.7 Write PBT: use Hypothesis to verify conflict-free invariant across ≥1,000 randomly generated disruption scenarios
+- [x] 10. MARL Train Scheduler
+  - [x] 10.1 Configure Flatland-RL environment to represent Corridor topology: map IR stations and track segments to Flatland grid topology
+  - [x] 10.2 Train PPO agent (Stable Baselines3, MLP actor/critic 256×256) on Flatland Corridor environment; reward: minimize total passenger delay with Conflict penalty
+  - [x] 10.3 Implement conflict-free constraint layer: post-process every proposed action set, check segment occupation time windows for overlap, reject any action that creates a Conflict before output
+  - [x] 10.4 Implement 30s hard timeout: if no conflict-free proposal found within 30s, emit `NO_FEASIBLE_PROPOSAL` to Operations_Controller within 35s
+  - [x] 10.5 Implement rejection loop: alternative proposals must differ in assignment pattern from rejected proposal; after 3 consecutive rejections emit `SCHEDULING_ESCALATION`
+  - [x] 10.6 Implement rescheduling proposal JSON producer: emit per §6.5 schema to scheduling.proposals Kafka topic
+  - [x] 10.7 Write PBT: use Hypothesis to verify conflict-free invariant across ≥1,000 randomly generated disruption scenarios
 
-- [ ] 11. Kavach++ Advisory Layer
-  - [ ] 11.1 Implement read-only data tap from Kavach 4.0 telemetry (via data diode read interface in Zone 2); verify zero write path to Zone 3/4
-  - [ ] 11.2 Implement 1D-CNN adhesion coefficient classifier: input bogie vibration window, output μ estimate (0.1–0.35)
-  - [ ] 11.3 Implement DEM-backed track gradient lookup: GPS coordinate → elevation model → gradient angle θ
-  - [ ] 11.4 Implement physics-based braking curve calculator: stopping_distance = v² / (2μg·cos(θ) + 2g·sin(θ))
-  - [ ] 11.5 Implement safety invariant check: assert advisory_stopping_distance(v) ≥ kavach_certified_stopping_distance(v) for all v; if violated, suppress advisory
-  - [ ] 11.6 Implement `KAVACH_ADVISORY_UNAVAILABLE` path: if required sensor data absent, withhold advisory and set unavailable status
-  - [ ] 11.7 Implement advisory event producer: label all outputs "ADVISORY — NOT CERTIFIED" in payload metadata and UI panel
-  - [ ] 11.8 Write PBT: use Hypothesis to verify stopping distance conservatism invariant across sampled speed/condition combinations
+- [x] 11. Kavach++ Advisory Layer
+  - [x] 11.1 Implement read-only data tap from Kavach 4.0 telemetry (via data diode read interface in Zone 2); verify zero write path to Zone 3/4
+  - [x] 11.2 Implement 1D-CNN adhesion coefficient classifier: input bogie vibration window, output μ estimate (0.1–0.35)
+  - [x] 11.3 Implement DEM-backed track gradient lookup: GPS coordinate → elevation model → gradient angle θ
+  - [x] 11.4 Implement physics-based braking curve calculator: stopping_distance = v² / (2μg·cos(θ) + 2g·sin(θ))
+  - [x] 11.5 Implement safety invariant check: assert advisory_stopping_distance(v) ≥ kavach_certified_stopping_distance(v) for all v; if violated, suppress advisory
+  - [x] 11.6 Implement `KAVACH_ADVISORY_UNAVAILABLE` path: if required sensor data absent, withhold advisory and set unavailable status
+  - [x] 11.7 Implement advisory event producer: label all outputs "ADVISORY — NOT CERTIFIED" in payload metadata and UI panel
+  - [x] 11.8 Write PBT: use Hypothesis to verify stopping distance conservatism invariant across sampled speed/condition combinations
 
-- [ ] 12. Cybersecurity LSTM Autoencoder and Dashboard
-  - [ ] 12.1 Train LSTM autoencoder (128→64→128 hidden units) on normal SCADA traffic baseline (anomaly-free)
-  - [ ] 12.2 Implement rolling window consumer: 60s window, 10s stride (50s overlap) from SCADA traffic Kafka topic
-  - [ ] 12.3 Implement anomaly scorer: compute reconstruction MSE; if > configurable threshold emit `SECURITY_ANOMALY` to security.anomalies topic with IEC 62443 zone, timestamp, error value
-  - [ ] 12.4 Implement forensic capture: on any anomaly, write raw 60s traffic window + reconstruction error vector + metadata to MinIO WORM bucket as `{alertId}.tar.gz`
-  - [ ] 12.5 Implement forensic evidence package API: `GET /api/v1/forensics/{alertId}/package` → downloadable archive within 5 minutes; accessible to Security_Officer role only
-  - [ ] 12.6 Build Grafana Cybersecurity Dashboard: IEC 62443 zone status panels (green/amber/red), anomaly timeline, unacknowledged alert queue, 15-min escalation timer display
-  - [ ] 12.7 Implement acknowledgement workflow: Security_Officer must acknowledge before alert clears; unacknowledged alerts escalate after 15 min to next on-call officer
-  - [ ] 12.8 Implement append-only audit log for `SECURITY_ANOMALY` events and acknowledgements (PostgreSQL trigger: no UPDATE/DELETE on security_audit table)
-  - [ ] 12.9 Implement red-team simulation mode: dedicated Kafka topic for synthetic adversarial SCADA injection; simulation mode runs without affecting live operational stream
+- [x] 12. Cybersecurity LSTM Autoencoder and Dashboard
+  - [x] 12.1 Train LSTM autoencoder (128→64→128 hidden units) on normal SCADA traffic baseline (anomaly-free)
+  - [x] 12.2 Implement rolling window consumer: 60s window, 10s stride (50s overlap) from SCADA traffic Kafka topic
+  - [x] 12.3 Implement anomaly scorer: compute reconstruction MSE; if > configurable threshold emit `SECURITY_ANOMALY` to security.anomalies topic with IEC 62443 zone, timestamp, error value
+  - [x] 12.4 Implement forensic capture: on any anomaly, write raw 60s traffic window + reconstruction error vector + metadata to MinIO WORM bucket as `{alertId}.tar.gz`
+  - [x] 12.5 Implement forensic evidence package API: `GET /api/v1/forensics/{alertId}/package` → downloadable archive within 5 minutes; accessible to Security_Officer role only
+  - [x] 12.6 Build Grafana Cybersecurity Dashboard: IEC 62443 zone status panels (green/amber/red), anomaly timeline, unacknowledged alert queue, 15-min escalation timer display
+  - [x] 12.7 Implement acknowledgement workflow: Security_Officer must acknowledge before alert clears; unacknowledged alerts escalate after 15 min to next on-call officer
+  - [x] 12.8 Implement append-only audit log for `SECURITY_ANOMALY` events and acknowledgements (PostgreSQL trigger: no UPDATE/DELETE on security_audit table)
+  - [x] 12.9 Implement red-team simulation mode: dedicated Kafka topic for synthetic adversarial SCADA injection; simulation mode runs without affecting live operational stream
 
-- [ ] 13. Digital Twin
-  - [ ] 13.1 Build PostGIS asset registry: import IR GIS track geometry (LineString, EPSG:4326) and station/bridge/tunnel assets; add spatial indexes
-  - [ ] 13.2 Build InfluxDB real-time state store: Kafka consumer group subscribing to all advisory and telemetry topics; update state on each event
-  - [ ] 13.3 Implement state conflict detector: reject topology-violating updates (position outside track geometry, two trains on same segment); log inconsistency with source event ID and timestamp
-  - [ ] 13.4 Implement OpenTrack simulation integration: import Corridor timetable, expose what-if scenario API for MARL proposal visualization
-  - [ ] 13.5 Build Three.js + Deck.gl frontend: render GIS corridor map with train position markers (≤5s refresh via WebSocket), defect markers, maintenance asset highlights, delay overlay
-  - [ ] 13.6 Implement visual encoding convention per §7.2: solid=confirmed, dashed=predicted, hatched=simulated, faded=stale; PI band overlay for delay forecasts and CI bars for failure probability
-  - [ ] 13.7 Implement persistent legend panel: always-visible, defines all encoding conventions (confirmed/predicted/simulated/stale/advisory)
-  - [ ] 13.8 Implement staleness indicator: if train position not updated >10s, display staleness icon on marker
-  - [ ] 13.9 Implement predicted→confirmed transition: update visual encoding within 3s of confirming sensor event receipt
-  - [ ] 13.10 Implement geographic isolation zone overlay: render zone boundaries, show zone-isolated degraded mode indicator when active
-  - [ ] 13.11 Performance test: verify ≥30 fps rendering of 200 concurrent train positions on 1920×1080 workstation
+- [x] 13. Digital Twin
+  - [x] 13.1 Build PostGIS asset registry: import IR GIS track geometry (LineString, EPSG:4326) and station/bridge/tunnel assets; add spatial indexes
+  - [x] 13.2 Build InfluxDB real-time state store: Kafka consumer group subscribing to all advisory and telemetry topics; update state on each event
+  - [x] 13.3 Implement state conflict detector: reject topology-violating updates (position outside track geometry, two trains on same segment); log inconsistency with source event ID and timestamp
+  - [x] 13.4 Implement OpenTrack simulation integration: import Corridor timetable, expose what-if scenario API for MARL proposal visualization
+  - [x] 13.5 Build Three.js + Deck.gl frontend: render GIS corridor map with train position markers (≤5s refresh via WebSocket), defect markers, maintenance asset highlights, delay overlay
+  - [x] 13.6 Implement visual encoding convention per §7.2: solid=confirmed, dashed=predicted, hatched=simulated, faded=stale; PI band overlay for delay forecasts and CI bars for failure probability
+  - [x] 13.7 Implement persistent legend panel: always-visible, defines all encoding conventions (confirmed/predicted/simulated/stale/advisory)
+  - [x] 13.8 Implement staleness indicator: if train position not updated >10s, display staleness icon on marker
+  - [x] 13.9 Implement predicted→confirmed transition: update visual encoding within 3s of confirming sensor event receipt
+  - [x] 13.10 Implement geographic isolation zone overlay: render zone boundaries, show zone-isolated degraded mode indicator when active
+  - [x] 13.11 Performance test: verify ≥30 fps rendering of 200 concurrent train positions on 1920×1080 workstation
 
-- [ ] 14. Human-in-the-Loop Authorization Gate
-  - [ ] 14.1 Implement risk score computation: risk_score = probability × severity_weight (CRITICAL=4, HIGH=3, MEDIUM=2, LOW=1); assert score ∈ [0.0, 4.0]
-  - [ ] 14.2 Implement risk tier classifier: Tier 1 ≥3.2 (dual-auth), Tier 2 2.0–3.19 (single-auth), Tier 3 <2.0 (standard)
-  - [ ] 14.3 Implement advisory queue: hold all advisories pending OC action; severity-descending order display; escalate to secondary OC after 10 min
-  - [ ] 14.4 Implement Tier 1 dual-authorization: require two distinct OC identity tokens before forwarding; record both in audit log
-  - [ ] 14.5 Implement authorization gate availability monitor: publish gate status (operational/degraded/unavailable) as Prometheus metric and Digital_Twin status indicator
-  - [ ] 14.6 Implement gate-unavailable hold: when gate unavailable, hold all advisories in queue, forward nothing until gate restored and OC reviews queue
-  - [ ] 14.7 Implement advisory authorization audit log: append-only record per §12 schema (auditId, advisoryId, action, identities, timestamp, riskTier, riskScore, modelVersion, configVersion)
-  - [ ] 14.8 Write PBT: use Hypothesis to verify no advisory reaches downstream without authorization record
+- [x] 14. Human-in-the-Loop Authorization Gate
+  - [x] 14.1 Implement risk score computation: risk_score = probability × severity_weight (CRITICAL=4, HIGH=3, MEDIUM=2, LOW=1); assert score ∈ [0.0, 4.0]
+  - [x] 14.2 Implement risk tier classifier: Tier 1 ≥3.2 (dual-auth), Tier 2 2.0–3.19 (single-auth), Tier 3 <2.0 (standard)
+  - [x] 14.3 Implement advisory queue: hold all advisories pending OC action; severity-descending order display; escalate to secondary OC after 10 min
+  - [x] 14.4 Implement Tier 1 dual-authorization: require two distinct OC identity tokens before forwarding; record both in audit log
+  - [x] 14.5 Implement authorization gate availability monitor: publish gate status (operational/degraded/unavailable) as Prometheus metric and Digital_Twin status indicator
+  - [x] 14.6 Implement gate-unavailable hold: when gate unavailable, hold all advisories in queue, forward nothing until gate restored and OC reviews queue
+  - [x] 14.7 Implement advisory authorization audit log: append-only record per §12 schema (auditId, advisoryId, action, identities, timestamp, riskTier, riskScore, modelVersion, configVersion)
+  - [x] 14.8 Write PBT: use Hypothesis to verify no advisory reaches downstream without authorization record
 
 - [x] 15. Role-Based Access Control and MFA
   - [x] 15.1 Configure Keycloak: create 4 roles (Operations_Controller, Security_Officer, Engineering_Team, Governance_Officer) with permission scopes per §9.1 design
@@ -254,8 +254,8 @@ Estimated implementation phases:
 - [x] 17. Container Security
   - [x] 17.1 Apply Kubernetes Pod Security Admission (restricted profile) to all RailOS namespaces: runAsNonRoot, allowPrivilegeEscalation=false, capabilities drop ALL, readOnlyRootFilesystem where feasible
   - [x] 17.2 Document and record in hazard register any subsystem requiring write access to root filesystem (residual risk acceptance per Req 39 C1)
-  - [ ] 17.3 Deploy Falco with RailOS-specific rules: detect and alert on privilege escalation attempts in any RailOS container
-  - [ ] 17.4 Implement `PRIVILEGE_ESCALATION_ALERT` handler: emit to Security_Officer, log container name + timestamp + attempted capability, terminate container within 30s
+  - [x] 17.3 Deploy Falco with RailOS-specific rules: detect and alert on privilege escalation attempts in any RailOS container
+  - [x] 17.4 Implement `PRIVILEGE_ESCALATION_ALERT` handler: emit to Security_Officer, log container name + timestamp + attempted capability, terminate container within 30s
 
 - [x] 18. Model Governance and CI/CD Pipeline
   - [x] 18.1 Configure MLflow tracking: all model training runs log parameters, metrics, and artifacts with MAJOR.MINOR.PATCH version tags; link run IDs to requirement IDs in traceability matrix
@@ -284,11 +284,11 @@ Estimated implementation phases:
   - [x] 20.6 Document full-system restore runbook targeting RTO ≤30 min from catastrophic failure
   - [x] 20.7 Test 24h Edge_Node autonomous operation: simulate complete central infrastructure outage and verify local inference, buffering, and alert continuity
 
-- [ ] 21. Safety and Compliance
-  - [ ] 21.1 Implement traceability matrix store (PostgreSQL): schema per §13.1; link requirement IDs to MLflow run IDs, hazard IDs, and verification evidence records
+- [x] 21. Safety and Compliance
+  - [x] 21.1 Implement traceability matrix store (PostgreSQL): schema per §13.1; link requirement IDs to MLflow run IDs, hazard IDs, and verification evidence records
   - [x] 21.2 Implement traceability report API: `GET /api/v1/traceability/{subsystemVersion}` → JSON/PDF report within 5 min; accessible to Engineering_Team and Security_Officer roles
-  - [ ] 21.3 Implement hazard register (PostgreSQL append-only table per §13.2 schema): `HAZARD_REVIEW_REQUIRED` trigger on repeated anomaly patterns; accessible to Security_Officer and Engineering_Team only
-  - [ ] 21.4 Implement Vault-backed configuration versioning: all thresholds, suppression windows, drift PSI values, and deployment parameters stored in Vault with immutable audit log (key, prev_value, new_value, identity, UTC timestamp)
+  - [x] 21.3 Implement hazard register (PostgreSQL append-only table per §13.2 schema): `HAZARD_REVIEW_REQUIRED` trigger on repeated anomaly patterns; accessible to Security_Officer and Engineering_Team only
+  - [x] 21.4 Implement Vault-backed configuration versioning: all thresholds, suppression windows, drift PSI values, and deployment parameters stored in Vault with immutable audit log (key, prev_value, new_value, identity, UTC timestamp)
   - [x] 21.5 Verify EN 50128 alignment: audit all deployed ML inference paths for deterministic behavior (no stochastic layers at inference, fixed-point quantization, version-controlled model artifacts)
 
 - [ ] 22. Operator UI
@@ -301,14 +301,14 @@ Estimated implementation phases:
   - [ ] 22.7 Implement high-contrast mode and reduced-motion mode: toggleable from dashboard settings without session restart
   - [ ] 22.8 Run WCAG 2.1 Level AA audit: verify color contrast ratios, text sizing, keyboard navigability across all operator interface components
 
-- [ ] 23. Property-Based Tests
-  - [ ] 23.1 Implement PBT: MARL conflict-free invariant (Hypothesis, ≥1,000 disruption scenarios) — Property 1
-  - [ ] 23.2 Implement PBT: Kavach advisory conservatism (Hypothesis, sampled speeds + track conditions) — Property 2
-  - [ ] 23.3 Implement PBT: FL global model quality bound (Hypothesis, sampled round data with ≥3 clients) — Property 3
-  - [ ] 23.4 Implement PBT: CI monotonic widening (Hypothesis, sampled interpolation percentages 0–40%) — Property 4
-  - [ ] 23.5 Implement PBT: risk score bounds [0.0, 4.0] (Hypothesis, all advisory types and probability values) — Property 5
-  - [ ] 23.6 Implement PBT: authorization gate enforcement (Hypothesis, verify no downstream delivery without auth record) — Property 6
-  - [ ] 23.7 Implement benchmark test: delay predictor MAE degradation ≤15% at 3-month vs 12-month training data — Property 7
+- [x] 23. Property-Based Tests
+  - [x] 23.1 Implement PBT: MARL conflict-free invariant (Hypothesis, ≥1,000 disruption scenarios) — Property 1
+  - [x] 23.2 Implement PBT: Kavach advisory conservatism (Hypothesis, sampled speeds + track conditions) — Property 2
+  - [x] 23.3 Implement PBT: FL global model quality bound (Hypothesis, sampled round data with ≥3 clients) — Property 3
+  - [x] 23.4 Implement PBT: CI monotonic widening (Hypothesis, sampled interpolation percentages 0–40%) — Property 4
+  - [x] 23.5 Implement PBT: risk score bounds [0.0, 4.0] (Hypothesis, all advisory types and probability values) — Property 5
+  - [x] 23.6 Implement PBT: authorization gate enforcement (Hypothesis, verify no downstream delivery without auth record) — Property 6
+  - [x] 23.7 Implement benchmark test: delay predictor MAE degradation ≤15% at 3-month vs 12-month training data — Property 7
 
 - [ ] 24. Simulation Validation
   - [x] 24.1 Prepare held-out historical IR movement dataset: minimum 30 days of actual train movement records from NTES historical archive
@@ -334,20 +334,20 @@ Estimated implementation phases:
   - [ ] 27.3 Run red-team exercise and measure detection rate: verify ≥80% of injected anomaly events trigger `SECURITY_ANOMALY` within 60s window; record result in audit log
   - [ ] 27.4 Run ART FGSM adversarial evaluation on all deployed ML models: verify primary metric degradation ≤15% on adversarial test set; record results in audit log
 
-- [ ] 28. Edge Node Hardware Telemetry and Thermal Protection
-  - [ ] 28.1 Implement hardware telemetry collector on each Edge_Node: sample CPU temp, GPU utilization, memory utilization, storage utilization, power status every 10s
-  - [ ] 28.2 Expose all hardware metrics as Prometheus-compatible metrics at Edge_Node telemetry endpoint (compatible with §19 observability stack)
-  - [ ] 28.3 Implement thermal protection logic: on CPU/GPU temp > OEM threshold, throttle inference threads + emit `THERMAL_PROTECTION_ACTIVE` alert
-  - [ ] 28.4 Implement thermal recovery: restore full inference capacity only after 60 consecutive seconds below OEM threshold; log throttle and restore events
+- [x] 28. Edge Node Hardware Telemetry and Thermal Protection
+  - [x] 28.1 Implement hardware telemetry collector on each Edge_Node: sample CPU temp, GPU utilization, memory utilization, storage utilization, power status every 10s
+  - [x] 28.2 Expose all hardware metrics as Prometheus-compatible metrics at Edge_Node telemetry endpoint (compatible with §19 observability stack)
+  - [x] 28.3 Implement thermal protection logic: on CPU/GPU temp > OEM threshold, throttle inference threads + emit `THERMAL_PROTECTION_ACTIVE` alert
+  - [x] 28.4 Implement thermal recovery: restore full inference capacity only after 60 consecutive seconds below OEM threshold; log throttle and restore events
 
-- [ ] 29. Alert Fatigue Management
-  - [ ] 29.1 Implement geographic deduplication: suppress duplicate `DEFECT_ALERT` events for same GPS coordinate (within 50m radius) + same Defect_Category within configurable suppression window (default 10 min); increment suppression counter on original alert
-  - [ ] 29.2 Implement advisory update-in-place: when `MAINTENANCE_ADVISORY` emitted for asset with existing active advisory, update probability score and timestamp rather than creating new entry
-  - [ ] 29.3 Implement suppression counter display in Operator UI: show count of suppressed duplicates on each active advisory entry
-  - [ ] 29.4 Implement Vault-backed suppression window configuration: suppression window is a versioned config parameter per §21.4
+- [x] 29. Alert Fatigue Management
+  - [x] 29.1 Implement geographic deduplication: suppress duplicate `DEFECT_ALERT` events for same GPS coordinate (within 50m radius) + same Defect_Category within configurable suppression window (default 10 min); increment suppression counter on original alert
+  - [x] 29.2 Implement advisory update-in-place: when `MAINTENANCE_ADVISORY` emitted for asset with existing active advisory, update probability score and timestamp rather than creating new entry
+  - [x] 29.3 Implement suppression counter display in Operator UI: show count of suppressed duplicates on each active advisory entry
+  - [x] 29.4 Implement Vault-backed suppression window configuration: suppression window is a versioned config parameter per §21.4
 
-- [ ] 30. Data Retention Lifecycle
-  - [ ] 30.1 Implement per-category retention policies with defaults: raw sensor events (90d), inference audit logs (365d), security anomaly records (365d), forensic evidence (365d), telemetry metrics (30d), model artifacts (indefinite until explicit deletion)
-  - [ ] 30.2 Implement automated archive/purge job: at retention expiry, archive to cold storage or purge per policy; skip records under active forensic hold
-  - [ ] 30.3 Implement forensic hold API: `POST /api/v1/retention/holds` (Security_Officer or Governance_Officer role); prevents purging of associated records until hold released
-  - [ ] 30.4 Implement monthly data retention compliance report: total records archived/purged per category, overdue records, current storage consumption per category; accessible to Governance_Officer role
+- [x] 30. Data Retention Lifecycle
+  - [x] 30.1 Implement per-category retention policies with defaults: raw sensor events (90d), inference audit logs (365d), security anomaly records (365d), forensic evidence (365d), telemetry metrics (30d), model artifacts (indefinite until explicit deletion)
+  - [x] 30.2 Implement automated archive/purge job: at retention expiry, archive to cold storage or purge per policy; skip records under active forensic hold
+  - [x] 30.3 Implement forensic hold API: `POST /api/v1/retention/holds` (Security_Officer or Governance_Officer role); prevents purging of associated records until hold released
+  - [x] 30.4 Implement monthly data retention compliance report: total records archived/purged per category, overdue records, current storage consumption per category; accessible to Governance_Officer role

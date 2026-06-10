@@ -1,0 +1,9 @@
+torch==2.3.0
+mapie==0.8.6
+shap==0.45.0
+mlflow==2.13.0
+kafka-python==2.0.2
+fastapi==0.111.0
+uvicorn==0.30.0
+prometheus-client==0.20.0
+numpy==1.26.4

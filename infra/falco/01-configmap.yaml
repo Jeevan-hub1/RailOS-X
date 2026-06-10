@@ -1,0 +1,88 @@
+---
+# Falco Runtime Security Rules — RailOS Pilot System (Task 17.3)
+# Detects privilege escalation attempts in any RailOS container.
+# Satisfies: Req 39 C3–C4, Design §9.3
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: falco-rules
+  namespace: railos
+  labels:
+    app.kubernetes.io/name: falco
+    app.kubernetes.io/part-of: railos-pilot
+data:
+  railos_rules.yaml: |
+    # ── RailOS Custom Falco Rules ────────────────────────────────────────────────
+
+    # Rule 1: Privilege escalation attempt via setuid/setgid
+    - rule: RailOS Privilege Escalation via setuid/setgid
+      desc: >
+        A process in a RailOS container attempted to gain elevated privileges
+        via setuid or setgid syscall. All RailOS containers run as non-root
+        with allowPrivilegeEscalation=false (Design §9.3 / Req 39).
+      condition: >
+        syscall.type in (setuid, setgid) and
+        container.name != host and
+        not proc.name in (runc, containerd, dockerd) and
+        k8s.ns.name = "railos"
+      output: >
+        PRIVILEGE_ESCALATION_ALERT container=%container.name
+        pod=%k8s.pod.name ns=%k8s.ns.name
+        user=%user.name uid=%user.uid
+        syscall=%syscall.type
+        cmd=%proc.cmdline
+      priority: CRITICAL
+      tags: [railos, privilege-escalation, security]
+
+    # Rule 2: Unexpected capabilities added at runtime
+    - rule: RailOS Unexpected Capability Addition
+      desc: >
+        A RailOS container attempted to add a Linux capability at runtime.
+        All RailOS containers drop ALL capabilities (PSA restricted profile).
+      condition: >
+        syscall.type = capset and
+        container.name != host and
+        k8s.ns.name = "railos" and
+        not proc.name in (runc, containerd)
+      output: >
+        PRIVILEGE_ESCALATION_ALERT type=capset container=%container.name
+        pod=%k8s.pod.name ns=%k8s.ns.name
+        user=%user.name cmd=%proc.cmdline
+      priority: CRITICAL
+      tags: [railos, capabilities, security]
+
+    # Rule 3: Write to /etc or /proc in a RailOS container (read-only FS violation)
+    - rule: RailOS Read-Only Filesystem Violation
+      desc: >
+        A write to /etc or /proc detected in a RailOS container that should have
+        a read-only root filesystem (PSA restricted profile).
+      condition: >
+        (open_write or rename or mkdir) and
+        (fd.name startswith /etc or fd.name startswith /proc) and
+        container.name != host and
+        k8s.ns.name = "railos" and
+        not proc.name in (runc, containerd, fluentd)
+      output: >
+        READONLY_FILESYSTEM_VIOLATION container=%container.name
+        pod=%k8s.pod.name path=%fd.name
+        cmd=%proc.cmdline
+      priority: WARNING
+      tags: [railos, filesystem, security]
+
+    # Rule 4: Unexpected outbound network from non-network services
+    - rule: RailOS Unexpected Outbound Connection
+      desc: >
+        An unexpected outbound TCP connection from a RailOS ML inference container.
+        These containers should only connect to Kafka and InfluxDB.
+      condition: >
+        (connect and evt.type = connect) and
+        k8s.ns.name = "railos" and
+        container.name in (defect-detector, maintenance-engine, delay-predictor) and
+        not fd.rip in (kafka-bootstrap, influxdb-primary, mlflow)
+      output: >
+        UNEXPECTED_OUTBOUND container=%container.name
+        pod=%k8s.pod.name
+        dst=%fd.rip:%fd.rport
+        cmd=%proc.cmdline
+      priority: WARNING
+      tags: [railos, network, security]

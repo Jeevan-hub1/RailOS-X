@@ -1,0 +1,87 @@
+﻿{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "railos.sensor.event",
+  "title": "RailOS Canonical Sensor Event",
+  "description": "Canonical sensor event schema for the RailOS Pilot System (Design §4.3, Req 1 C2-C8)",
+  "type": "object",
+  "required": [
+    "eventId",
+    "sourceId",
+    "sensorType",
+    "assetId",
+    "timestamp_utc",
+    "sequence",
+    "payload",
+    "quality_flags",
+    "schema_version"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "eventId": {
+      "type": "string",
+      "format": "uuid",
+      "description": "UUID v4 unique identifier for the event"
+    },
+    "sourceId": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Edge node or source system identifier"
+    },
+    "sensorType": {
+      "type": "string",
+      "enum": ["vibration", "temperature", "gps", "wheel_load", "acoustic", "camera"],
+      "description": "Type of sensor producing this event"
+    },
+    "assetId": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Track segment or rolling stock asset identifier"
+    },
+    "timestamp_utc": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO-8601 UTC timestamp of the sensor reading"
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Monotonically increasing sequence number per sourceId"
+    },
+    "payload": {
+      "type": "object",
+      "description": "Sensor-specific measurement data (heterogeneous per sensorType)",
+      "additionalProperties": true
+    },
+    "quality_flags": {
+      "type": "object",
+      "description": "Data quality metadata attached to every canonical event",
+      "required": ["interpolated", "interpolation_pct", "clock_reliable", "drift_ms"],
+      "additionalProperties": false,
+      "properties": {
+        "interpolated": {
+          "type": "boolean",
+          "description": "True if any values in the payload were linearly interpolated"
+        },
+        "interpolation_pct": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 100.0,
+          "description": "Percentage of payload values that were interpolated (0-100)"
+        },
+        "clock_reliable": {
+          "type": "boolean",
+          "description": "False when source clock drift exceeds 100ms threshold"
+        },
+        "drift_ms": {
+          "type": "number",
+          "description": "Measured clock drift in milliseconds relative to PTP grandmaster"
+        }
+      }
+    },
+    "schema_version": {
+      "type": "string",
+      "pattern": "^[0-9]+[.][0-9]+[.][0-9]+$",
+      "description": "Semantic version of the canonical schema (currently 1.0.0)"
+    }
+  }
+}

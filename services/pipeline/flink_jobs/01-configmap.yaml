@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: railos-flink-jobs-config
+  namespace: railos-pipeline
+  labels:
+    app.kubernetes.io/name: flink-jobs
+    app.kubernetes.io/part-of: railos-data-pipeline
+    app.kubernetes.io/component: flink
+data:
+  KAFKA_BOOTSTRAP_SERVERS: "kafka-headless.railos-kafka.svc:9092"
+  SCHEMA_REGISTRY_URL: "http://apicurio-registry.railos-pipeline.svc:8080"
+  # Number of parallel Flink task slots per job
+  FLINK_PARALLELISM: "4"

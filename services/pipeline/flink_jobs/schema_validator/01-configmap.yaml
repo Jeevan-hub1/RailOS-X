@@ -1,0 +1,25 @@
+---
+# Schema Validator Flink Job — ConfigMap
+#
+# Satisfies:
+#   - Req 1 C2:  Exactly-once checkpointing, 500 ms normalization SLA
+#   - Req 1 C3:  Invalid events → dead-letter.schema-failures + SCHEMA_VALIDATION_FAILURE alert
+#   - Design §4.2: Flink schema validation operator
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: schema-validator-job-config
+  namespace: railos
+  labels:
+    app: schema-validator-job
+    app.kubernetes.io/name: schema-validator-job
+    app.kubernetes.io/component: flink-job
+    app.kubernetes.io/part-of: railos-pilot
+data:
+  # Kafka bootstrap — matches the Strimzi cluster service headless DNS
+  KAFKA_BOOTSTRAP_SERVERS: "kafka-0.kafka-headless.railos.svc.cluster.local:9092,kafka-1.kafka-headless.railos.svc.cluster.local:9092,kafka-2.kafka-headless.railos.svc.cluster.local:9092"
+  # Flink job parallelism — 4 task slots for 10k events/s throughput (Req 1 C6)
+  FLINK_PARALLELISM: "4"
+  # Schema registry (Apicurio) for schema lookup at job startup
+  SCHEMA_REGISTRY_URL: "http://apicurio.railos.svc.cluster.local:8080"
+  SCHEMA_NAME: "railos.sensor.event"

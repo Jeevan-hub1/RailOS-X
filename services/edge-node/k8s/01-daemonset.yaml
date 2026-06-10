@@ -1,0 +1,128 @@
+# RailOS Edge Node — Kubernetes DaemonSet (Task 5.6)
+# Deploys one edge-node agent pod per node labelled railos.io/role=edge-node.
+# Satisfies: Req 2 (autonomous operation), Req 33 (network partition), Req 44 (hardware telemetry)
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: railos-edge-node
+  namespace: railos
+  labels:
+    app: railos-edge-node
+    component: edge-node
+    version: "1.0.0"
+spec:
+  selector:
+    matchLabels:
+      app: railos-edge-node
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        app: railos-edge-node
+        component: edge-node
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port:   "8080"
+        prometheus.io/path:   "/metrics"
+    spec:
+      # ── Node selector: only Tier-2 edge nodes ───────────────────────────────
+      nodeSelector:
+        railos.io/role: edge-node
+
+      # ── Non-root security context ────────────────────────────────────────────
+      securityContext:
+        runAsNonRoot: true
+        runAsUser:    1000
+        runAsGroup:   1000
+        fsGroup:      1000
+
+      # ── Tolerate edge-node taint if set ─────────────────────────────────────
+      tolerations:
+        - key:      "railos.io/role"
+          operator: "Equal"
+          value:    "edge-node"
+          effect:   "NoSchedule"
+
+      containers:
+        - name: edge-node
+          image: railos/edge-node:latest
+          imagePullPolicy: Always
+
+          ports:
+            - name: metrics
+              containerPort: 8080
+              protocol: TCP
+
+          # ── Environment variables ─────────────────────────────────────────────
+          env:
+            - name: PIPELINE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: edge-node-secrets
+                  key: PIPELINE_URL
+            - name: BUFFER_DB_PATH
+              value: /data/buffer/events.db
+            - name: MODEL_STORE_PATH
+              value: /data/models
+            - name: SMS_GATEWAY_URL
+              valueFrom:
+                secretKeyRef:
+                  name: edge-node-secrets
+                  key: SMS_GATEWAY_URL
+                  optional: true
+            - name: METRICS_PORT
+              value: "8080"
+            - name: ALERT_LOG_PATH
+              value: /data/logs/storage_alerts.jsonl
+
+          # ── Volume mounts ─────────────────────────────────────────────────────
+          volumeMounts:
+            - name: railos-data
+              mountPath: /data
+
+          # ── Resource limits ───────────────────────────────────────────────────
+          resources:
+            requests:
+              cpu:    "500m"
+              memory: "512Mi"
+            limits:
+              cpu:    "2000m"
+              memory: "4Gi"
+
+          # ── Health probes ─────────────────────────────────────────────────────
+          readinessProbe:
+            httpGet:
+              path:   /metrics
+              port:   8080
+            initialDelaySeconds: 10
+            periodSeconds:       15
+            failureThreshold:    3
+
+          livenessProbe:
+            httpGet:
+              path:   /metrics
+              port:   8080
+            initialDelaySeconds: 30
+            periodSeconds:       30
+            failureThreshold:    5
+
+          # ── Container security context ────────────────────────────────────────
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem:   true
+            capabilities:
+              drop:
+                - ALL
+
+      # ── Volumes ───────────────────────────────────────────────────────────────
+      volumes:
+        - name: railos-data
+          hostPath:
+            path: /data/railos
+            type: DirectoryOrCreate
+
+      terminationGracePeriodSeconds: 30
+      restartPolicy: Always

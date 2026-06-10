@@ -1,0 +1,43 @@
+# RailOS Track Defect Detector — Dataset Configuration
+# Requirement: REQ-003 (Track Defect Detection)
+
+dataset:
+  name: railos_corridor_defects
+  version: "1.0.0"
+  description: >
+    Indian Railways corridor track surface defect dataset.
+    Collected from trackside IR cameras at 30fps, 640×640 RGB.
+
+classes:
+  - crack
+  - flaking
+  - fastener_loose
+  - spalling
+
+num_classes: 4
+
+splits:
+  train_split: 0.80
+  val_split: 0.10
+  test_split: 0.10
+
+quality:
+  min_images_per_class: 500
+  image_size: [640, 640]
+  color_mode: RGB
+  annotation_format: yolo  # YOLO format: class cx cy w h (normalized)
+
+augmentation:
+  horizontal_flip: true
+  vertical_flip: false
+  rotation_degrees: 15
+  brightness_range: [0.8, 1.2]
+  contrast_range: [0.8, 1.2]
+  mosaic: true
+  mixup: 0.1
+
+paths:
+  raw_images_dir: data/raw
+  labels_dir: data/labels
+  splits_dir: data/splits
+  stats_output: data/dataset_stats.json

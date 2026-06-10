@@ -1,0 +1,136 @@
+---
+# Falco DaemonSet — Runtime security monitoring for RailOS containers (Task 17.3)
+# Deployed to railos-system namespace (privileged — exempt from PSA restricted)
+# Satisfies: Req 39 C3, Design §9.3
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: falco
+  namespace: railos-system
+  labels:
+    app: falco
+    app.kubernetes.io/name: falco
+    app.kubernetes.io/component: runtime-security
+    app.kubernetes.io/part-of: railos-pilot
+spec:
+  selector:
+    matchLabels:
+      app: falco
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app: falco
+        app.kubernetes.io/name: falco
+    spec:
+      serviceAccountName: falco
+      hostNetwork: true
+      hostPID: true
+      tolerations:
+        - operator: Exists  # Run on all nodes including control-plane
+      containers:
+        - name: falco
+          image: falcosecurity/falco-no-driver:0.38.0
+          imagePullPolicy: IfNotPresent
+          args:
+            - /usr/bin/falco
+            - --cri=/run/containerd/containerd.sock
+            - --k8s-api=https://kubernetes.default.svc
+            - -r /etc/falco/railos_rules.yaml
+            - -o json_output=true
+            - -o log_stderr=true
+            - -o program_output.enabled=true
+            - -o "program_output.program=railos-falco-handler"
+          securityContext:
+            privileged: true   # Required: Falco needs kernel access (railos-system namespace)
+          env:
+            - name: FALCO_K8S_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: KAFKA_BOOTSTRAP_SERVERS
+              value: "railos-kafka-kafka-bootstrap.railos.svc.cluster.local:9092"
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "256Mi"
+            limits:
+              cpu: "1000m"
+              memory: "512Mi"
+          volumeMounts:
+            - name: falco-rules
+              mountPath: /etc/falco/railos_rules.yaml
+              subPath: railos_rules.yaml
+              readOnly: true
+            - name: containerd-sock
+              mountPath: /run/containerd/containerd.sock
+              readOnly: true
+            - name: dev
+              mountPath: /dev
+            - name: proc
+              mountPath: /host/proc
+              readOnly: true
+            - name: boot
+              mountPath: /host/boot
+              readOnly: true
+            - name: lib-modules
+              mountPath: /host/lib/modules
+              readOnly: true
+            - name: usr
+              mountPath: /host/usr
+              readOnly: true
+
+      volumes:
+        - name: falco-rules
+          configMap:
+            name: falco-rules
+            namespace: railos
+        - name: containerd-sock
+          hostPath:
+            path: /run/containerd/containerd.sock
+            type: Socket
+        - name: dev
+          hostPath:
+            path: /dev
+        - name: proc
+          hostPath:
+            path: /proc
+        - name: boot
+          hostPath:
+            path: /boot
+        - name: lib-modules
+          hostPath:
+            path: /lib/modules
+        - name: usr
+          hostPath:
+            path: /usr
+---
+# ServiceAccount for Falco (needs read access to pods/nodes)
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: falco
+  namespace: railos-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: falco
+rules:
+  - apiGroups: [""]
+    resources: ["nodes", "pods", "namespaces", "events"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: falco
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: falco
+subjects:
+  - kind: ServiceAccount
+    name: falco
+    namespace: railos-system

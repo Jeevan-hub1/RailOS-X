@@ -1,0 +1,109 @@
+---
+# InfluxDB Writer Service — Deployment
+#
+# Satisfies:
+#   - Req 39 C1: non-root, no privilege escalation, readOnlyRootFilesystem
+#   - Req 19 C1: Prometheus scrape annotations for metrics collection
+#   - Req 1 C4/C5: 2 replicas for HA during write operations
+#
+# The deployment runs 2 replicas.  Both replicas subscribe to the same Kafka
+# consumer group (railos-influxdb-writer), so Kafka handles partition balancing.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: influxdb-writer
+  namespace: railos
+  labels:
+    app: influxdb-writer
+    app.kubernetes.io/name: influxdb-writer
+    app.kubernetes.io/component: storage-writer
+    app.kubernetes.io/part-of: railos-pilot
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: influxdb-writer
+  template:
+    metadata:
+      labels:
+        app: influxdb-writer
+        app.kubernetes.io/name: influxdb-writer
+      annotations:
+        # Prometheus auto-discovery
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+
+      containers:
+        - name: influxdb-writer
+          image: railos/influxdb-writer:1.0.0
+          imagePullPolicy: IfNotPresent
+
+          ports:
+            - name: metrics
+              containerPort: 8000
+              protocol: TCP
+
+          envFrom:
+            - configMapRef:
+                name: influxdb-writer-config
+
+          env:
+            # InfluxDB token injected from Secret
+            - name: INFLUXDB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: influxdb-auth
+                  key: admin-token
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "1000m"
+              memory: "512Mi"
+
+          volumeMounts:
+            - name: failure-queue
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+
+          livenessProbe:
+            httpGet:
+              path: /metrics
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 30
+            failureThreshold: 3
+
+          readinessProbe:
+            httpGet:
+              path: /metrics
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+
+      volumes:
+        - name: failure-queue
+          emptyDir: {}   # Replace with PVC for persistence across pod restarts
+        - name: tmp
+          emptyDir: {}
+
+      automountServiceAccountToken: false

@@ -1,0 +1,598 @@
+# RailOS Corridor Configuration — Simplified IR South Central Railway Topology
+# 20 stations, 50 trains, speed limits, initial positions
+# Used by RailOSCorridorEnv and topology_loader.py
+
+corridor:
+  name: "South Central Railway — Simplified Pilot Corridor"
+  zone: "SCR"
+  total_length_km: 1452
+
+stations:
+  - id: "SCR-ST-001"
+    name: "Secunderabad Junction"
+    position_km: 0.0
+    platform_count: 6
+    max_speed_kmh: 0
+    lat: 17.4399
+    lon: 78.4983
+  - id: "SCR-ST-002"
+    name: "Hyderabad Deccan"
+    position_km: 8.2
+    platform_count: 4
+    max_speed_kmh: 0
+    lat: 17.3850
+    lon: 78.4867
+  - id: "SCR-ST-003"
+    name: "Lingampally"
+    position_km: 22.5
+    platform_count: 2
+    max_speed_kmh: 0
+    lat: 17.4948
+    lon: 78.3226
+  - id: "SCR-ST-004"
+    name: "Kacheguda"
+    position_km: 35.1
+    platform_count: 3
+    max_speed_kmh: 0
+    lat: 17.3912
+    lon: 78.5112
+  - id: "SCR-ST-005"
+    name: "Nalgonda"
+    position_km: 94.0
+    platform_count: 2
+    max_speed_kmh: 0
+    lat: 17.0576
+    lon: 79.2671
+  - id: "SCR-ST-006"
+    name: "Miryalaguda"
+    position_km: 142.0
+    platform_count: 2
+    max_speed_kmh: 0
+    lat: 16.8722
+    lon: 79.5650
+  - id: "SCR-ST-007"
+    name: "Nagarjunasagar Road"
+    position_km: 178.0
+    platform_count: 1
+    max_speed_kmh: 0
+    lat: 16.7200
+    lon: 79.7200
+  - id: "SCR-ST-008"
+    name: "Macherla"
+    position_km: 212.0
+    platform_count: 2
+    max_speed_kmh: 0
+    lat: 16.4752
+    lon: 79.4347
+  - id: "SCR-ST-009"
+    name: "Guntur Junction"
+    position_km: 285.0
+    platform_count: 5
+    max_speed_kmh: 0
+    lat: 16.3067
+    lon: 80.4365
+  - id: "SCR-ST-010"
+    name: "Vijayawada Junction"
+    position_km: 345.0
+    platform_count: 8
+    max_speed_kmh: 0
+    lat: 16.5193
+    lon: 80.6305
+  - id: "SCR-ST-011"
+    name: "Tenali Junction"
+    position_km: 378.0
+    platform_count: 3
+    max_speed_kmh: 0
+    lat: 16.2438
+    lon: 80.6403
+  - id: "SCR-ST-012"
+    name: "Ongole"
+    position_km: 456.0
+    platform_count: 3
+    max_speed_kmh: 0
+    lat: 15.5057
+    lon: 80.0499
+  - id: "SCR-ST-013"
+    name: "Nellore"
+    position_km: 548.0
+    platform_count: 4
+    max_speed_kmh: 0
+    lat: 14.4426
+    lon: 79.9865
+  - id: "SCR-ST-014"
+    name: "Gudur Junction"
+    position_km: 592.0
+    platform_count: 3
+    max_speed_kmh: 0
+    lat: 14.1481
+    lon: 79.8550
+  - id: "SCR-ST-015"
+    name: "Renigunta Junction"
+    position_km: 648.0
+    platform_count: 4
+    max_speed_kmh: 0
+    lat: 13.6508
+    lon: 79.5108
+  - id: "SCR-ST-016"
+    name: "Tirupati"
+    position_km: 658.0
+    platform_count: 5
+    max_speed_kmh: 0
+    lat: 13.6288
+    lon: 79.4192
+  - id: "SCR-ST-017"
+    name: "Katpadi Junction"
+    position_km: 710.0
+    platform_count: 3
+    max_speed_kmh: 0
+    lat: 12.9675
+    lon: 79.1455
+  - id: "SCR-ST-018"
+    name: "Jolarpettai Junction"
+    position_km: 768.0
+    platform_count: 2
+    max_speed_kmh: 0
+    lat: 12.5667
+    lon: 78.5833
+  - id: "SCR-ST-019"
+    name: "Salem Junction"
+    position_km: 832.0
+    platform_count: 4
+    max_speed_kmh: 0
+    lat: 11.6643
+    lon: 78.1460
+  - id: "SCR-ST-020"
+    name: "Chennai Central"
+    position_km: 912.0
+    platform_count: 12
+    max_speed_kmh: 0
+    lat: 13.0827
+    lon: 80.2707
+
+track_segments:
+  - id: "scr-seg-001"
+    from_station: "SCR-ST-001"
+    to_station: "SCR-ST-002"
+    length_km: 8.2
+    max_speed_kmh: 100
+    track_type: "double"
+    gradient_permille: 0
+  - id: "scr-seg-002"
+    from_station: "SCR-ST-002"
+    to_station: "SCR-ST-003"
+    length_km: 14.3
+    max_speed_kmh: 110
+    track_type: "double"
+    gradient_permille: -2
+  - id: "scr-seg-003"
+    from_station: "SCR-ST-003"
+    to_station: "SCR-ST-004"
+    length_km: 12.6
+    max_speed_kmh: 100
+    track_type: "single"
+    gradient_permille: 3
+  - id: "scr-seg-004"
+    from_station: "SCR-ST-004"
+    to_station: "SCR-ST-005"
+    length_km: 58.9
+    max_speed_kmh: 130
+    track_type: "double"
+    gradient_permille: -1
+  - id: "scr-seg-005"
+    from_station: "SCR-ST-005"
+    to_station: "SCR-ST-006"
+    length_km: 48.0
+    max_speed_kmh: 120
+    track_type: "single"
+    gradient_permille: 2
+  - id: "scr-seg-006"
+    from_station: "SCR-ST-006"
+    to_station: "SCR-ST-007"
+    length_km: 36.0
+    max_speed_kmh: 100
+    track_type: "single"
+    gradient_permille: -3
+  - id: "scr-seg-007"
+    from_station: "SCR-ST-007"
+    to_station: "SCR-ST-008"
+    length_km: 34.0
+    max_speed_kmh: 110
+    track_type: "single"
+    gradient_permille: 1
+  - id: "scr-seg-008"
+    from_station: "SCR-ST-008"
+    to_station: "SCR-ST-009"
+    length_km: 73.0
+    max_speed_kmh: 130
+    track_type: "double"
+    gradient_permille: 0
+  - id: "scr-seg-009"
+    from_station: "SCR-ST-009"
+    to_station: "SCR-ST-010"
+    length_km: 60.0
+    max_speed_kmh: 130
+    track_type: "double"
+    gradient_permille: 0
+  - id: "scr-seg-010"
+    from_station: "SCR-ST-010"
+    to_station: "SCR-ST-011"
+    length_km: 33.0
+    max_speed_kmh: 120
+    track_type: "double"
+    gradient_permille: -1
+  - id: "scr-seg-011"
+    from_station: "SCR-ST-011"
+    to_station: "SCR-ST-012"
+    length_km: 78.0
+    max_speed_kmh: 130
+    track_type: "double"
+    gradient_permille: -2
+  - id: "scr-seg-012"
+    from_station: "SCR-ST-012"
+    to_station: "SCR-ST-013"
+    length_km: 92.0
+    max_speed_kmh: 130
+    track_type: "double"
+    gradient_permille: 1
+  - id: "scr-seg-013"
+    from_station: "SCR-ST-013"
+    to_station: "SCR-ST-014"
+    length_km: 44.0
+    max_speed_kmh: 120
+    track_type: "double"
+    gradient_permille: 0
+  - id: "scr-seg-014"
+    from_station: "SCR-ST-014"
+    to_station: "SCR-ST-015"
+    length_km: 56.0
+    max_speed_kmh: 110
+    track_type: "single"
+    gradient_permille: 3
+  - id: "scr-seg-015"
+    from_station: "SCR-ST-015"
+    to_station: "SCR-ST-016"
+    length_km: 10.0
+    max_speed_kmh: 80
+    track_type: "single"
+    gradient_permille: -2
+  - id: "scr-seg-016"
+    from_station: "SCR-ST-016"
+    to_station: "SCR-ST-017"
+    length_km: 52.0
+    max_speed_kmh: 110
+    track_type: "single"
+    gradient_permille: 4
+  - id: "scr-seg-017"
+    from_station: "SCR-ST-017"
+    to_station: "SCR-ST-018"
+    length_km: 58.0
+    max_speed_kmh: 110
+    track_type: "single"
+    gradient_permille: 2
+  - id: "scr-seg-018"
+    from_station: "SCR-ST-018"
+    to_station: "SCR-ST-019"
+    length_km: 64.0
+    max_speed_kmh: 120
+    track_type: "double"
+    gradient_permille: -1
+  - id: "scr-seg-019"
+    from_station: "SCR-ST-019"
+    to_station: "SCR-ST-020"
+    length_km: 80.0
+    max_speed_kmh: 130
+    track_type: "double"
+    gradient_permille: 0
+
+initial_train_positions:
+  # 50 trains spread across the corridor
+  - train_id: "SCR-TRN-001"
+    segment_id: "scr-seg-001"
+    position_fraction: 0.1
+    destination_station: "SCR-ST-010"
+    current_delay_min: 0
+    speed_kmh: 80
+  - train_id: "SCR-TRN-002"
+    segment_id: "scr-seg-001"
+    position_fraction: 0.7
+    destination_station: "SCR-ST-020"
+    current_delay_min: 5
+    speed_kmh: 90
+  - train_id: "SCR-TRN-003"
+    segment_id: "scr-seg-002"
+    position_fraction: 0.2
+    destination_station: "SCR-ST-015"
+    current_delay_min: 0
+    speed_kmh: 100
+  - train_id: "SCR-TRN-004"
+    segment_id: "scr-seg-002"
+    position_fraction: 0.8
+    destination_station: "SCR-ST-001"
+    current_delay_min: 3
+    speed_kmh: 95
+  - train_id: "SCR-TRN-005"
+    segment_id: "scr-seg-003"
+    position_fraction: 0.4
+    destination_station: "SCR-ST-020"
+    current_delay_min: 0
+    speed_kmh: 85
+  - train_id: "SCR-TRN-006"
+    segment_id: "scr-seg-004"
+    position_fraction: 0.1
+    destination_station: "SCR-ST-009"
+    current_delay_min: 10
+    speed_kmh: 110
+  - train_id: "SCR-TRN-007"
+    segment_id: "scr-seg-004"
+    position_fraction: 0.5
+    destination_station: "SCR-ST-001"
+    current_delay_min: 0
+    speed_kmh: 120
+  - train_id: "SCR-TRN-008"
+    segment_id: "scr-seg-004"
+    position_fraction: 0.9
+    destination_station: "SCR-ST-020"
+    current_delay_min: 2
+    speed_kmh: 115
+  - train_id: "SCR-TRN-009"
+    segment_id: "scr-seg-005"
+    position_fraction: 0.3
+    destination_station: "SCR-ST-010"
+    current_delay_min: 7
+    speed_kmh: 100
+  - train_id: "SCR-TRN-010"
+    segment_id: "scr-seg-005"
+    position_fraction: 0.7
+    destination_station: "SCR-ST-001"
+    current_delay_min: 0
+    speed_kmh: 105
+  - train_id: "SCR-TRN-011"
+    segment_id: "scr-seg-006"
+    position_fraction: 0.2
+    destination_station: "SCR-ST-020"
+    current_delay_min: 0
+    speed_kmh: 90
+  - train_id: "SCR-TRN-012"
+    segment_id: "scr-seg-006"
+    position_fraction: 0.6
+    destination_station: "SCR-ST-005"
+    current_delay_min: 4
+    speed_kmh: 88
+  - train_id: "SCR-TRN-013"
+    segment_id: "scr-seg-007"
+    position_fraction: 0.4
+    destination_station: "SCR-ST-001"
+    current_delay_min: 0
+    speed_kmh: 95
+  - train_id: "SCR-TRN-014"
+    segment_id: "scr-seg-007"
+    position_fraction: 0.8
+    destination_station: "SCR-ST-020"
+    current_delay_min: 15
+    speed_kmh: 80
+  - train_id: "SCR-TRN-015"
+    segment_id: "scr-seg-008"
+    position_fraction: 0.1
+    destination_station: "SCR-ST-010"
+    current_delay_min: 0
+    speed_kmh: 120
+  - train_id: "SCR-TRN-016"
+    segment_id: "scr-seg-008"
+    position_fraction: 0.5
+    destination_station: "SCR-ST-001"
+    current_delay_min: 8
+    speed_kmh: 110
+  - train_id: "SCR-TRN-017"
+    segment_id: "scr-seg-008"
+    position_fraction: 0.9
+    destination_station: "SCR-ST-015"
+    current_delay_min: 0
+    speed_kmh: 125
+  - train_id: "SCR-TRN-018"
+    segment_id: "scr-seg-009"
+    position_fraction: 0.2
+    destination_station: "SCR-ST-020"
+    current_delay_min: 3
+    speed_kmh: 120
+  - train_id: "SCR-TRN-019"
+    segment_id: "scr-seg-009"
+    position_fraction: 0.6
+    destination_station: "SCR-ST-001"
+    current_delay_min: 0
+    speed_kmh: 115
+  - train_id: "SCR-TRN-020"
+    segment_id: "scr-seg-010"
+    position_fraction: 0.3
+    destination_station: "SCR-ST-009"
+    current_delay_min: 5
+    speed_kmh: 100
+  - train_id: "SCR-TRN-021"
+    segment_id: "scr-seg-010"
+    position_fraction: 0.7
+    destination_station: "SCR-ST-020"
+    current_delay_min: 0
+    speed_kmh: 110
+  - train_id: "SCR-TRN-022"
+    segment_id: "scr-seg-011"
+    position_fraction: 0.1
+    destination_station: "SCR-ST-001"
+    current_delay_min: 12
+    speed_kmh: 115
+  - train_id: "SCR-TRN-023"
+    segment_id: "scr-seg-011"
+    position_fraction: 0.5
+    destination_station: "SCR-ST-015"
+    current_delay_min: 0
+    speed_kmh: 120
+  - train_id: "SCR-TRN-024"
+    segment_id: "scr-seg-011"
+    position_fraction: 0.9
+    destination_station: "SCR-ST-010"
+    current_delay_min: 0
+    speed_kmh: 125
+  - train_id: "SCR-TRN-025"
+    segment_id: "scr-seg-012"
+    position_fraction: 0.2
+    destination_station: "SCR-ST-020"
+    current_delay_min: 6
+    speed_kmh: 120
+  - train_id: "SCR-TRN-026"
+    segment_id: "scr-seg-012"
+    position_fraction: 0.6
+    destination_station: "SCR-ST-001"
+    current_delay_min: 0
+    speed_kmh: 115
+  - train_id: "SCR-TRN-027"
+    segment_id: "scr-seg-013"
+    position_fraction: 0.3
+    destination_station: "SCR-ST-010"
+    current_delay_min: 0
+    speed_kmh: 110
+  - train_id: "SCR-TRN-028"
+    segment_id: "scr-seg-013"
+    position_fraction: 0.8
+    destination_station: "SCR-ST-001"
+    current_delay_min: 9
+    speed_kmh: 105
+  - train_id: "SCR-TRN-029"
+    segment_id: "scr-seg-014"
+    position_fraction: 0.2
+    destination_station: "SCR-ST-020"
+    current_delay_min: 0
+    speed_kmh: 100
+  - train_id: "SCR-TRN-030"
+    segment_id: "scr-seg-014"
+    position_fraction: 0.7
+    destination_station: "SCR-ST-015"
+    current_delay_min: 3
+    speed_kmh: 95
+  - train_id: "SCR-TRN-031"
+    segment_id: "scr-seg-015"
+    position_fraction: 0.4
+    destination_station: "SCR-ST-001"
+    current_delay_min: 0
+    speed_kmh: 70
+  - train_id: "SCR-TRN-032"
+    segment_id: "scr-seg-016"
+    position_fraction: 0.1
+    destination_station: "SCR-ST-020"
+    current_delay_min: 20
+    speed_kmh: 85
+  - train_id: "SCR-TRN-033"
+    segment_id: "scr-seg-016"
+    position_fraction: 0.6
+    destination_station: "SCR-ST-010"
+    current_delay_min: 0
+    speed_kmh: 90
+  - train_id: "SCR-TRN-034"
+    segment_id: "scr-seg-017"
+    position_fraction: 0.3
+    destination_station: "SCR-ST-001"
+    current_delay_min: 5
+    speed_kmh: 95
+  - train_id: "SCR-TRN-035"
+    segment_id: "scr-seg-017"
+    position_fraction: 0.8
+    destination_station: "SCR-ST-020"
+    current_delay_min: 0
+    speed_kmh: 100
+  - train_id: "SCR-TRN-036"
+    segment_id: "scr-seg-018"
+    position_fraction: 0.1
+    destination_station: "SCR-ST-015"
+    current_delay_min: 0
+    speed_kmh: 110
+  - train_id: "SCR-TRN-037"
+    segment_id: "scr-seg-018"
+    position_fraction: 0.5
+    destination_station: "SCR-ST-001"
+    current_delay_min: 7
+    speed_kmh: 115
+  - train_id: "SCR-TRN-038"
+    segment_id: "scr-seg-018"
+    position_fraction: 0.9
+    destination_station: "SCR-ST-010"
+    current_delay_min: 0
+    speed_kmh: 120
+  - train_id: "SCR-TRN-039"
+    segment_id: "scr-seg-019"
+    position_fraction: 0.1
+    destination_station: "SCR-ST-020"
+    current_delay_min: 0
+    speed_kmh: 125
+  - train_id: "SCR-TRN-040"
+    segment_id: "scr-seg-019"
+    position_fraction: 0.4
+    destination_station: "SCR-ST-001"
+    current_delay_min: 11
+    speed_kmh: 120
+  - train_id: "SCR-TRN-041"
+    segment_id: "scr-seg-019"
+    position_fraction: 0.7
+    destination_station: "SCR-ST-015"
+    current_delay_min: 0
+    speed_kmh: 115
+  - train_id: "SCR-TRN-042"
+    segment_id: "scr-seg-003"
+    position_fraction: 0.5
+    destination_station: "SCR-ST-010"
+    current_delay_min: 0
+    speed_kmh: 90
+  - train_id: "SCR-TRN-043"
+    segment_id: "scr-seg-005"
+    position_fraction: 0.1
+    destination_station: "SCR-ST-001"
+    current_delay_min: 4
+    speed_kmh: 95
+  - train_id: "SCR-TRN-044"
+    segment_id: "scr-seg-009"
+    position_fraction: 0.9
+    destination_station: "SCR-ST-005"
+    current_delay_min: 0
+    speed_kmh: 110
+  - train_id: "SCR-TRN-045"
+    segment_id: "scr-seg-012"
+    position_fraction: 0.4
+    destination_station: "SCR-ST-010"
+    current_delay_min: 2
+    speed_kmh: 120
+  - train_id: "SCR-TRN-046"
+    segment_id: "scr-seg-004"
+    position_fraction: 0.3
+    destination_station: "SCR-ST-015"
+    current_delay_min: 0
+    speed_kmh: 115
+  - train_id: "SCR-TRN-047"
+    segment_id: "scr-seg-006"
+    position_fraction: 0.9
+    destination_station: "SCR-ST-020"
+    current_delay_min: 6
+    speed_kmh: 85
+  - train_id: "SCR-TRN-048"
+    segment_id: "scr-seg-011"
+    position_fraction: 0.3
+    destination_station: "SCR-ST-001"
+    current_delay_min: 0
+    speed_kmh: 120
+  - train_id: "SCR-TRN-049"
+    segment_id: "scr-seg-013"
+    position_fraction: 0.5
+    destination_station: "SCR-ST-010"
+    current_delay_min: 8
+    speed_kmh: 100
+  - train_id: "SCR-TRN-050"
+    segment_id: "scr-seg-016"
+    position_fraction: 0.4
+    destination_station: "SCR-ST-020"
+    current_delay_min: 0
+    speed_kmh: 95
+
+rl_config:
+  grid_width: 50
+  grid_height: 25
+  num_trains: 50
+  max_episode_steps: 500
+  observation_radius: 10
+  malfunction_rate: 0.01
+  malfunction_min_duration: 1
+  malfunction_max_duration: 5

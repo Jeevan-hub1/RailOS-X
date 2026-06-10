@@ -1,0 +1,160 @@
+---
+# RailOS Maintenance Engine — Deployment (Task 7.6)
+# 2 replicas, non-root UID 1000, Prometheus annotations
+# Satisfies: Req 4, Req 39 C1, Design §6.2, §9.3
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: maintenance-engine
+  namespace: railos
+  labels:
+    app: maintenance-engine
+    component: predictive-maintenance
+    version: "1.0.0"
+  annotations:
+    # Prometheus scrape annotations
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "9090"
+    prometheus.io/path: "/metrics"
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: maintenance-engine
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: maintenance-engine
+        component: predictive-maintenance
+        version: "1.0.0"
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+        prometheus.io/path: "/metrics"
+    spec:
+      # -----------------------------------------------------------------------
+      # Security context — non-root, no privilege escalation (Req 39 C1)
+      # -----------------------------------------------------------------------
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+
+      automountServiceAccountToken: false
+
+      containers:
+        - name: maintenance-engine
+          image: railos/maintenance-engine:1.0.0
+          imagePullPolicy: IfNotPresent
+
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+            - name: metrics
+              containerPort: 9090
+              protocol: TCP
+
+          # -----------------------------------------------------------------
+          # Environment from ConfigMap
+          # -----------------------------------------------------------------
+          envFrom:
+            - configMapRef:
+                name: maintenance-engine-config
+
+          # -----------------------------------------------------------------
+          # Container-level security context
+          # -----------------------------------------------------------------
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+
+          # -----------------------------------------------------------------
+          # Resource limits
+          # -----------------------------------------------------------------
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              cpu: "2"
+              memory: "4Gi"
+
+          # -----------------------------------------------------------------
+          # Health probes
+          # -----------------------------------------------------------------
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            failureThreshold: 3
+
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+
+          # -----------------------------------------------------------------
+          # Volume mounts
+          # -----------------------------------------------------------------
+          volumeMounts:
+            - name: model-store
+              mountPath: /models
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+
+      # -----------------------------------------------------------------------
+      # Volumes
+      # -----------------------------------------------------------------------
+      volumes:
+        - name: model-store
+          persistentVolumeClaim:
+            claimName: maintenance-engine-model-pvc
+        - name: tmp
+          emptyDir: {}
+
+      # -----------------------------------------------------------------------
+      # Scheduling
+      # -----------------------------------------------------------------------
+      restartPolicy: Always
+      terminationGracePeriodSeconds: 30
+
+---
+# Service exposing HTTP + metrics ports
+apiVersion: v1
+kind: Service
+metadata:
+  name: maintenance-engine
+  namespace: railos
+  labels:
+    app: maintenance-engine
+spec:
+  selector:
+    app: maintenance-engine
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+      protocol: TCP
+    - name: metrics
+      port: 9090
+      targetPort: 9090
+      protocol: TCP
+  type: ClusterIP
