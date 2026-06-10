@@ -1,0 +1,79 @@
+---
+# Alertmanager configuration — RailOS
+# Routes: CRITICAL → PagerDuty + SMS, WARNING → SMS only
+# Satisfies: Req 15 (availability alerts), Req 17 (observability), Design §8
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alertmanager-config
+  namespace: railos
+  labels:
+    app.kubernetes.io/name: alertmanager
+    app.kubernetes.io/part-of: railos-pilot
+data:
+  alertmanager.yml: |
+    global:
+      resolve_timeout: 5m
+      pagerduty_url: 'https://events.pagerduty.com/v2/enqueue'
+
+    templates:
+      - '/etc/alertmanager/templates/*.tmpl'
+
+    route:
+      group_by: ['alertname', 'subsystem', 'component']
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 1h
+      receiver: sms-webhook
+
+      routes:
+        # Critical alerts → PagerDuty + SMS
+        - matchers:
+            - severity = critical
+          receiver: pagerduty-critical
+          continue: true
+
+        # SUBSYSTEM_DEGRADED (>1% error rate) → SMS gateway
+        - matchers:
+            - alertname =~ ".*SubsystemDegraded.*|.*Down$|.*Sealed$"
+          receiver: sms-webhook
+          group_wait: 10s
+          repeat_interval: 30m
+
+        # Security anomalies → Security_Officer channel
+        - matchers:
+            - team = security
+          receiver: security-channel
+          group_wait: 0s
+
+    receivers:
+      - name: sms-webhook
+        webhook_configs:
+          - url: '${SMS_WEBHOOK_URL}'
+            send_resolved: true
+            max_alerts: 10
+
+      - name: pagerduty-critical
+        pagerduty_configs:
+          - routing_key: '${PAGERDUTY_KEY}'
+            description: 'RailOS CRITICAL: {{ .GroupLabels.alertname }}'
+            severity: critical
+            details:
+              component: '{{ .CommonLabels.component }}'
+              subsystem: '{{ .CommonLabels.subsystem }}'
+            send_resolved: true
+
+      - name: security-channel
+        webhook_configs:
+          - url: '${SMS_WEBHOOK_URL}'
+            send_resolved: true
+            http_config:
+              bearer_token_file: /var/run/secrets/alertmanager/token
+
+    inhibit_rules:
+      # When a component is completely down, suppress lower-severity alerts for it
+      - source_matchers:
+          - severity = critical
+        target_matchers:
+          - severity = warning
+        equal: ['component']

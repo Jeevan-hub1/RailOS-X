@@ -1,0 +1,133 @@
+---
+# Grafana datasources and dashboard provisioning configuration
+# Sources: Prometheus, InfluxDB, Elasticsearch
+# Req 17 (operational dashboards)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-config
+  namespace: railos-observability
+  labels:
+    app: grafana
+    component: observability
+data:
+  # -------------------------------------------------------
+  # Datasource provisioning
+  # -------------------------------------------------------
+  datasource.yaml: |
+    apiVersion: 1
+    deleteDatasources:
+      - name: Prometheus
+        orgId: 1
+      - name: InfluxDB
+        orgId: 1
+      - name: Elasticsearch
+        orgId: 1
+
+    datasources:
+      - name: Prometheus
+        type: prometheus
+        access: proxy
+        orgId: 1
+        uid: railos-prometheus
+        url: http://prometheus.railos-observability.svc.cluster.local:9090
+        isDefault: true
+        jsonData:
+          httpMethod: POST
+          timeInterval: "15s"
+          queryTimeout: "60s"
+        version: 1
+        editable: false
+
+      - name: InfluxDB
+        type: influxdb
+        access: proxy
+        orgId: 1
+        uid: railos-influxdb
+        url: http://influxdb-primary.railos-influxdb.svc.cluster.local:8086
+        jsonData:
+          version: Flux
+          organization: railos
+          defaultBucket: sensor_data
+          tlsSkipVerify: false
+        secureJsonData:
+          token: "${INFLUXDB_TOKEN}"
+        version: 1
+        editable: false
+
+      - name: Elasticsearch
+        type: elasticsearch
+        access: proxy
+        orgId: 1
+        uid: railos-elasticsearch
+        url: http://elasticsearch.railos-observability.svc.cluster.local:9200
+        jsonData:
+          index: "railos-logs-*"
+          timeField: "@timestamp"
+          esVersion: "8.0.0"
+          logMessageField: "message"
+          logLevelField: "level"
+          maxConcurrentShardRequests: 5
+        version: 1
+        editable: false
+
+  # -------------------------------------------------------
+  # Dashboard provisioning
+  # -------------------------------------------------------
+  dashboards.yaml: |
+    apiVersion: 1
+    providers:
+      - name: RailOS Dashboards
+        orgId: 1
+        folder: RailOS
+        folderUid: railos-dashboards
+        type: file
+        disableDeletion: true
+        updateIntervalSeconds: 30
+        allowUiUpdates: false
+        options:
+          path: /var/lib/grafana/dashboards
+
+  # -------------------------------------------------------
+  # Grafana main config
+  # -------------------------------------------------------
+  grafana.ini: |
+    [server]
+    protocol = http
+    http_port = 3000
+    root_url = http://localhost:3000/
+
+    [security]
+    admin_user = admin
+    admin_password = ${GF_SECURITY_ADMIN_PASSWORD}
+    disable_gravatar = true
+    cookie_secure = false
+    strict_transport_security = false
+
+    [auth]
+    disable_login_form = false
+
+    [users]
+    allow_sign_up = false
+    default_theme = dark
+
+    [alerting]
+    enabled = false
+
+    [unified_alerting]
+    enabled = false
+
+    [analytics]
+    reporting_enabled = false
+    check_for_updates = false
+
+    [log]
+    mode = console
+    level = info
+    filters = rendering:debug
+
+    [paths]
+    data = /var/lib/grafana
+    logs = /var/log/grafana
+    plugins = /var/lib/grafana/plugins
+    provisioning = /etc/grafana/provisioning

@@ -1,0 +1,231 @@
+---
+# Prometheus configuration ConfigMap
+# Scrapes all RailOS services; references alerting rules
+# Req 17 (Monitoring), Req 25 (E2E Latency)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: railos-observability
+  labels:
+    app: prometheus
+    component: observability
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval:     15s
+      evaluation_interval: 15s
+      scrape_timeout:      10s
+      external_labels:
+        cluster: railos-pilot
+        environment: production
+
+    # Alertmanager integration
+    alerting:
+      alertmanagers:
+        - static_configs:
+            - targets:
+                - alertmanager:9093
+
+    # Load alerting rules
+    rule_files:
+      - /etc/prometheus/rules/*.yaml
+
+    # Remote write stub (configure endpoint before production)
+    remote_write:
+      - url: "http://remote-write-stub:9201/write"
+        # Uncomment and populate in production:
+        # basic_auth:
+        #   username: ""
+        #   password: ""
+        # tls_config:
+        #   ca_file: /etc/prometheus/tls/ca.crt
+
+    scrape_configs:
+      # -------------------------------------------------------
+      # Kafka (JMX exporter on 9404)
+      # -------------------------------------------------------
+      - job_name: kafka
+        static_configs:
+          - targets:
+              - kafka-0.kafka-headless.railos-kafka.svc.cluster.local:9404
+              - kafka-1.kafka-headless.railos-kafka.svc.cluster.local:9404
+              - kafka-2.kafka-headless.railos-kafka.svc.cluster.local:9404
+        relabel_configs:
+          - source_labels: [__address__]
+            target_label: instance
+
+      # -------------------------------------------------------
+      # InfluxDB (native metrics on 8086)
+      # -------------------------------------------------------
+      - job_name: influxdb
+        static_configs:
+          - targets:
+              - influxdb-primary.railos-influxdb.svc.cluster.local:8086
+              - influxdb-standby.railos-influxdb.svc.cluster.local:8086
+        metrics_path: /metrics
+
+      # -------------------------------------------------------
+      # PostgreSQL / PostGIS (postgres_exporter on 9187)
+      # -------------------------------------------------------
+      - job_name: postgresql
+        static_configs:
+          - targets:
+              - postgresql-exporter.railos-postgresql.svc.cluster.local:9187
+        relabel_configs:
+          - source_labels: [__address__]
+            target_label: instance
+
+      - job_name: postgis
+        static_configs:
+          - targets:
+              - postgis-exporter.railos-postgis.svc.cluster.local:9187
+
+      # -------------------------------------------------------
+      # Keycloak (metrics on 8080/metrics)
+      # -------------------------------------------------------
+      - job_name: keycloak
+        static_configs:
+          - targets:
+              - keycloak.railos-keycloak.svc.cluster.local:8080
+        metrics_path: /metrics
+
+      # -------------------------------------------------------
+      # Kong Gateway (status API on 8001)
+      # -------------------------------------------------------
+      - job_name: kong
+        static_configs:
+          - targets:
+              - kong.railos-kong.svc.cluster.local:8001
+        metrics_path: /metrics
+
+      # -------------------------------------------------------
+      # HashiCorp Vault (telemetry on 8200)
+      # -------------------------------------------------------
+      - job_name: vault
+        static_configs:
+          - targets:
+              - vault.railos-vault.svc.cluster.local:8200
+        metrics_path: /v1/sys/metrics
+        params:
+          format: ['prometheus']
+
+      # -------------------------------------------------------
+      # MinIO (metrics on 9000)
+      # -------------------------------------------------------
+      - job_name: minio
+        static_configs:
+          - targets:
+              - minio.railos-minio.svc.cluster.local:9000
+        metrics_path: /minio/v2/metrics/cluster
+
+      # -------------------------------------------------------
+      # MLflow (custom exporter on 5000)
+      # -------------------------------------------------------
+      - job_name: mlflow
+        static_configs:
+          - targets:
+              - mlflow.railos-ml.svc.cluster.local:5000
+        metrics_path: /metrics
+
+      # -------------------------------------------------------
+      # Apache Flink (metrics on 8080)
+      # -------------------------------------------------------
+      - job_name: flink-jobmanager
+        static_configs:
+          - targets:
+              - flink-jobmanager.railos-flink.svc.cluster.local:8080
+        metrics_path: /
+
+      - job_name: flink-taskmanager
+        static_configs:
+          - targets:
+              - flink-taskmanager.railos-flink.svc.cluster.local:8080
+        metrics_path: /
+
+      # -------------------------------------------------------
+      # RailOS Application Services (8080 = HTTP metrics)
+      # -------------------------------------------------------
+      - job_name: railos-services
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names:
+                - railos-app
+                - railos-ml
+                - railos-dt
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+            action: keep
+            regex: "true"
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+            action: replace
+            target_label: __metrics_path__
+            regex: (.+)
+          - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+            action: replace
+            regex: ([^:]+)(?::\d+)?;(\d+)
+            replacement: $1:$2
+            target_label: __address__
+          - action: labelmap
+            regex: __meta_kubernetes_pod_label_(.+)
+          - source_labels: [__meta_kubernetes_namespace]
+            target_label: namespace
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+
+      # -------------------------------------------------------
+      # Observability latency monitor (port 8080)
+      # -------------------------------------------------------
+      - job_name: railos-latency-monitor
+        static_configs:
+          - targets:
+              - latency-monitor.railos-observability.svc.cluster.local:8080
+        metrics_path: /metrics
+
+      # -------------------------------------------------------
+      # Prometheus self-scrape
+      # -------------------------------------------------------
+      - job_name: prometheus
+        static_configs:
+          - targets:
+              - localhost:9090
+
+  alerts.yaml: |
+    groups:
+      - name: railos_sla
+        interval: 60s
+        rules:
+          - alert: SubsystemDegraded
+            expr: railos_subsystem_error_rate > 0.01
+            for: 5m
+            labels:
+              severity: critical
+            annotations:
+              summary: "Subsystem {{ $labels.subsystem }} error rate > 1%"
+              description: "Error rate: {{ $value | humanizePercentage }} over 5-min window"
+
+          - alert: E2ELatencySLABreach
+            expr: railos_alert_e2e_latency_seconds{quantile="0.99"} > 5.0
+            for: 1m
+            labels:
+              severity: critical
+            annotations:
+              summary: "E2E alert latency p99 exceeds 5 s SLA"
+              description: "p99 latency: {{ $value }}s for alert_type={{ $labels.alert_type }}"
+
+          - alert: AuthorizationGateDegraded
+            expr: railos_authorization_gate_status{status="degraded"} == 1
+            for: 2m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Authorization gate is degraded"
+
+          - alert: AuthorizationGateUnavailable
+            expr: railos_authorization_gate_status{status="unavailable"} == 1
+            for: 30s
+            labels:
+              severity: critical
+            annotations:
+              summary: "Authorization gate is unavailable"

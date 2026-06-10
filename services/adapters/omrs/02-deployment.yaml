@@ -1,0 +1,66 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: omrs-adapter
+  namespace: railos
+  labels:
+    app: omrs-adapter
+    component: legacy-adapter
+    adapter_version: "1.0.0"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: omrs-adapter
+  template:
+    metadata:
+      labels:
+        app: omrs-adapter
+        component: legacy-adapter
+        adapter_version: "1.0.0"
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+      containers:
+        - name: omrs-adapter
+          image: railos/omrs-adapter:1.0.0
+          imagePullPolicy: Always
+          ports:
+            - name: metrics
+              containerPort: 8080
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: omrs-adapter-config
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+          livenessProbe:
+            httpGet:
+              path: /metrics
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /metrics
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      restartPolicy: Always

@@ -1,0 +1,161 @@
+---
+# Prometheus 2.52 Deployment
+# Non-root, 20Gi PVC for TSDB, 30-day retention
+# Req 17, Req 25, Req 30 (retention)
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: railos-observability
+  labels:
+    app.kubernetes.io/part-of: railos
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: prometheus
+  namespace: railos-observability
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: prometheus-railos
+rules:
+  - apiGroups: [""]
+    resources:
+      - nodes
+      - nodes/proxy
+      - services
+      - endpoints
+      - pods
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["extensions"]
+    resources:
+      - ingresses
+    verbs: ["get", "list", "watch"]
+  - nonResourceURLs: ["/metrics"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: prometheus-railos
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: prometheus-railos
+subjects:
+  - kind: ServiceAccount
+    name: prometheus
+    namespace: railos-observability
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: prometheus-tsdb
+  namespace: railos-observability
+  labels:
+    app: prometheus
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+  storageClassName: standard
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  namespace: railos-observability
+  labels:
+    app: prometheus
+    component: observability
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prometheus
+  template:
+    metadata:
+      labels:
+        app: prometheus
+        component: observability
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+    spec:
+      serviceAccountName: prometheus
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534   # nobody
+        runAsGroup: 65534
+        fsGroup: 65534
+      initContainers:
+        - name: fix-permissions
+          image: busybox:1.36
+          command: ["sh", "-c", "chown -R 65534:65534 /prometheus"]
+          volumeMounts:
+            - name: prometheus-storage
+              mountPath: /prometheus
+          securityContext:
+            runAsUser: 0
+      containers:
+        - name: prometheus
+          image: prom/prometheus:v2.52.0
+          args:
+            - "--config.file=/etc/prometheus/prometheus.yml"
+            - "--storage.tsdb.path=/prometheus"
+            - "--storage.tsdb.retention.time=30d"
+            - "--storage.tsdb.retention.size=18GB"
+            - "--web.console.libraries=/usr/share/prometheus/console_libraries"
+            - "--web.console.templates=/usr/share/prometheus/consoles"
+            - "--web.enable-lifecycle"
+            - "--web.enable-admin-api"
+          ports:
+            - containerPort: 9090
+              name: http
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              cpu: "2000m"
+              memory: "4Gi"
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: 9090
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /-/healthy
+              port: 9090
+            initialDelaySeconds: 30
+            periodSeconds: 15
+          volumeMounts:
+            - name: prometheus-config
+              mountPath: /etc/prometheus
+            - name: prometheus-rules
+              mountPath: /etc/prometheus/rules
+            - name: prometheus-storage
+              mountPath: /prometheus
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: prometheus-config
+          configMap:
+            name: prometheus-config
+        - name: prometheus-rules
+          configMap:
+            name: prometheus-config
+            items:
+              - key: alerts.yaml
+                path: railos-alerts.yaml
+        - name: prometheus-storage
+          persistentVolumeClaim:
+            claimName: prometheus-tsdb

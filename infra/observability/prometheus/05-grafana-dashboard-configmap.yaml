@@ -1,0 +1,96 @@
+---
+# RailOS Grafana Operations Dashboard ConfigMap
+# Satisfies: Req 17 (observability), Req 25 (e2e latency monitoring)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboards
+  namespace: railos
+  labels:
+    app.kubernetes.io/name: grafana
+    app.kubernetes.io/part-of: railos-pilot
+data:
+  railos-operations.json: |
+    {
+      "__inputs": [
+        {"name": "DS_PROMETHEUS", "label": "Prometheus", "type": "datasource", "pluginId": "prometheus"}
+      ],
+      "title": "RailOS Operations",
+      "uid": "railos-ops-001",
+      "schemaVersion": 38,
+      "refresh": "30s",
+      "panels": [
+        {
+          "id": 1,
+          "title": "E2E Alert Latency (p50 / p95 / p99)",
+          "type": "timeseries",
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+          "targets": [
+            {"expr": "histogram_quantile(0.50, sum(rate(railos_alert_e2e_latency_seconds_bucket[5m])) by (le, alert_type))", "legendFormat": "p50 {{alert_type}}"},
+            {"expr": "histogram_quantile(0.95, sum(rate(railos_alert_e2e_latency_seconds_bucket[5m])) by (le, alert_type))", "legendFormat": "p95 {{alert_type}}"},
+            {"expr": "histogram_quantile(0.99, sum(rate(railos_alert_e2e_latency_seconds_bucket[5m])) by (le, alert_type))", "legendFormat": "p99 {{alert_type}}"}
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "thresholds": {"steps": [{"color": "green", "value": null}, {"color": "red", "value": 5}]}
+            }
+          }
+        },
+        {
+          "id": 2,
+          "title": "Authorization Gate Status",
+          "type": "stat",
+          "gridPos": {"h": 4, "w": 4, "x": 12, "y": 0},
+          "targets": [
+            {"expr": "railos_authorization_gate_status", "legendFormat": "Gate Status"}
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "mappings": [
+                {"type": "value", "options": {"0": {"text": "UNAVAILABLE", "color": "red"}, "1": {"text": "DEGRADED", "color": "orange"}, "2": {"text": "OPERATIONAL", "color": "green"}}}
+              ]
+            }
+          }
+        },
+        {
+          "id": 3,
+          "title": "Subsystem Error Rates",
+          "type": "table",
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+          "targets": [
+            {"expr": "sum(rate(railos_subsystem_error_rate[5m])) by (subsystem)", "legendFormat": "{{subsystem}}", "instant": true}
+          ]
+        },
+        {
+          "id": 4,
+          "title": "Kafka Consumer Lag",
+          "type": "timeseries",
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+          "targets": [
+            {"expr": "sum(kafka_consumer_group_lag) by (consumergroup, topic)", "legendFormat": "{{consumergroup}} / {{topic}}"}
+          ],
+          "fieldConfig": {"defaults": {"unit": "short"}}
+        },
+        {
+          "id": 5,
+          "title": "InfluxDB Write Throughput",
+          "type": "timeseries",
+          "gridPos": {"h": 6, "w": 12, "x": 0, "y": 16},
+          "targets": [
+            {"expr": "rate(influxdb_writes_total[5m])", "legendFormat": "Writes/s"}
+          ],
+          "fieldConfig": {"defaults": {"unit": "wps"}}
+        },
+        {
+          "id": 6,
+          "title": "ML Inference Latency by Model",
+          "type": "timeseries",
+          "gridPos": {"h": 6, "w": 12, "x": 12, "y": 16},
+          "targets": [
+            {"expr": "histogram_quantile(0.95, sum(rate(railos_ml_inference_latency_ms_bucket[5m])) by (le, model))", "legendFormat": "p95 {{model}}"}
+          ],
+          "fieldConfig": {"defaults": {"unit": "ms"}}
+        }
+      ]
+    }

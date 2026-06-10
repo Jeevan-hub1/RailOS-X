@@ -1,0 +1,63 @@
+---
+# Kibana 8.13 for log visualization
+# Satisfies: Req 17 (structured JSON log aggregation), Design §8
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kibana
+  namespace: railos
+  labels:
+    app: kibana
+    app.kubernetes.io/name: kibana
+    app.kubernetes.io/part-of: railos-pilot
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kibana
+  template:
+    metadata:
+      labels:
+        app: kibana
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: kibana
+          image: docker.elastic.co/kibana/kibana:8.13.2
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: ELASTICSEARCH_HOSTS
+              value: "http://elasticsearch.railos.svc.cluster.local:9200"
+            - name: SERVER_HOST
+              value: "0.0.0.0"
+            - name: SERVER_NAME
+              value: "railos-kibana"
+            - name: TELEMETRY_ENABLED
+              value: "false"
+            - name: XPACK_SECURITY_ENABLED
+              value: "false"
+          ports:
+            - name: http
+              containerPort: 5601
+          resources:
+            requests:
+              cpu: "300m"
+              memory: "512Mi"
+            limits:
+              cpu: "1000m"
+              memory: "1Gi"
+          readinessProbe:
+            httpGet:
+              path: /api/status
+              port: http
+            initialDelaySeconds: 45
+            periodSeconds: 15
+            timeoutSeconds: 10
+            failureThreshold: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]

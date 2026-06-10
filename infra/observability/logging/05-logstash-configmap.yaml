@@ -1,0 +1,92 @@
+---
+# Logstash pipeline: Kafka → JSON parse → Elasticsearch
+# Consumes monitoring.alerts, audit.inference, audit.authorization topics
+# Satisfies: Req 17 (structured JSON logs into ELK), Design §8
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: logstash-config
+  namespace: railos
+  labels:
+    app: logstash
+    app.kubernetes.io/part-of: railos-pilot
+data:
+  logstash.yml: |
+    http.host: "0.0.0.0"
+    xpack.monitoring.enabled: false
+    log.level: warn
+    log.format: json
+
+  railos-pipeline.conf: |
+    input {
+      kafka {
+        bootstrap_servers => "railos-kafka-kafka-bootstrap.railos.svc.cluster.local:9092"
+        topics => [
+          "monitoring.alerts",
+          "audit.inference",
+          "audit.authorization",
+          "security.anomalies",
+          "dead-letter.schema-failures",
+          "dead-letter.adapter-failures"
+        ]
+        group_id => "logstash-railos"
+        consumer_threads => 3
+        codec => plain { charset => "UTF-8" }
+        auto_offset_reset => "latest"
+        decorate_events => true
+      }
+    }
+
+    filter {
+      # Parse JSON payload
+      json {
+        source => "message"
+        target => "event"
+        skip_on_invalid_json => true
+      }
+
+      # Set @timestamp from event timestamp_utc if present
+      if [event][timestamp_utc] {
+        date {
+          match => ["[event][timestamp_utc]", "ISO8601"]
+          target => "@timestamp"
+        }
+      }
+
+      # Add Kafka metadata as top-level fields
+      mutate {
+        add_field => {
+          "kafka_topic" => "%{[@metadata][kafka][topic]}"
+          "kafka_partition" => "%{[@metadata][kafka][partition]}"
+          "kafka_offset" => "%{[@metadata][kafka][offset]}"
+        }
+      }
+
+      # Tag by topic type for index routing
+      if [kafka_topic] =~ /^monitoring\.alerts/ {
+        mutate { add_tag => ["system_alert"] }
+      } else if [kafka_topic] =~ /^audit\./ {
+        mutate { add_tag => ["audit"] }
+      } else if [kafka_topic] =~ /^security\./ {
+        mutate { add_tag => ["security"] }
+      } else if [kafka_topic] =~ /^dead-letter\./ {
+        mutate { add_tag => ["dead_letter"] }
+      }
+
+      # Remove raw message after parsing
+      mutate {
+        remove_field => ["message"]
+      }
+    }
+
+    output {
+      elasticsearch {
+        hosts => ["http://elasticsearch.railos.svc.cluster.local:9200"]
+        # Separate index per topic category, daily rotation
+        index => "railos-%{kafka_topic}-%{+YYYY.MM.dd}"
+        ilm_enabled => false
+      }
+
+      # Stdout for debugging (remove in production)
+      # stdout { codec => dots }
+    }

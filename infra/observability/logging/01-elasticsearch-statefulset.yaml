@@ -1,0 +1,99 @@
+---
+# Elasticsearch 8.13 — single-node for pilot (no xpack security for simplicity)
+# Satisfies: Req 17 (structured log aggregation), Design §8
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: elasticsearch
+  namespace: railos
+  labels:
+    app: elasticsearch
+    app.kubernetes.io/name: elasticsearch
+    app.kubernetes.io/part-of: railos-pilot
+spec:
+  serviceName: elasticsearch-headless
+  replicas: 1
+  selector:
+    matchLabels:
+      app: elasticsearch
+  template:
+    metadata:
+      labels:
+        app: elasticsearch
+    spec:
+      # ES requires vm.max_map_count=262144 — set via initContainer
+      initContainers:
+        - name: sysctl
+          image: busybox:1.36
+          command: ["sysctl", "-w", "vm.max_map_count=262144"]
+          securityContext:
+            privileged: true
+            runAsUser: 0
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: elasticsearch
+          image: docker.elastic.co/elasticsearch/elasticsearch:8.13.2
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: discovery.type
+              value: single-node
+            - name: xpack.security.enabled
+              value: "false"
+            - name: xpack.security.enrollment.enabled
+              value: "false"
+            - name: ES_JAVA_OPTS
+              value: "-Xms1g -Xmx1g"
+            - name: cluster.name
+              value: railos-logs
+            - name: network.host
+              value: "0.0.0.0"
+          ports:
+            - name: http
+              containerPort: 9200
+            - name: transport
+              containerPort: 9300
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "2Gi"
+            limits:
+              cpu: "2000m"
+              memory: "3Gi"
+          readinessProbe:
+            httpGet:
+              path: /_cluster/health?wait_for_status=yellow&timeout=5s
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 10
+            failureThreshold: 5
+          livenessProbe:
+            httpGet:
+              path: /_cluster/health
+              port: http
+            initialDelaySeconds: 60
+            periodSeconds: 20
+            timeoutSeconds: 10
+            failureThreshold: 5
+          volumeMounts:
+            - name: es-data
+              mountPath: /usr/share/elasticsearch/data
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+  volumeClaimTemplates:
+    - metadata:
+        name: es-data
+        labels:
+          app: elasticsearch
+          app.kubernetes.io/part-of: railos-pilot
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: standard
+        resources:
+          requests:
+            storage: 20Gi

@@ -1,0 +1,67 @@
+---
+# OpenTelemetry Collector Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector
+  namespace: railos
+  labels:
+    app: otel-collector
+    app.kubernetes.io/name: otel-collector
+    app.kubernetes.io/part-of: railos-pilot
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: otel-collector
+  template:
+    metadata:
+      labels:
+        app: otel-collector
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8888"
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+      containers:
+        - name: otel-collector
+          image: otel/opentelemetry-collector-contrib:0.100.0
+          imagePullPolicy: IfNotPresent
+          args:
+            - --config=/etc/otel/otel-collector-config.yaml
+          ports:
+            - name: otlp-grpc
+              containerPort: 4317
+            - name: otlp-http
+              containerPort: 4318
+            - name: metrics
+              containerPort: 8888
+            - name: prom-export
+              containerPort: 8889
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "256Mi"
+            limits:
+              cpu: "1000m"
+              memory: "512Mi"
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 13133
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          volumeMounts:
+            - name: otel-config
+              mountPath: /etc/otel
+              readOnly: true
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: otel-config
+          configMap:
+            name: otel-collector-config

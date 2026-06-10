@@ -1,0 +1,64 @@
+---
+# E2E Alert Latency Monitor
+# Satisfies: Req 25 (e2e latency ≤5s, p50/p95/p99 Prometheus metrics), Design §8
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: latency-monitor
+  namespace: railos
+  labels:
+    app: latency-monitor
+    app.kubernetes.io/name: latency-monitor
+    app.kubernetes.io/part-of: railos-pilot
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: latency-monitor
+  template:
+    metadata:
+      labels:
+        app: latency-monitor
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: latency-monitor
+          image: railos/latency-monitor:1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: latency-monitor-config
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 15
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true

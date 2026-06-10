@@ -1,0 +1,63 @@
+---
+# Jaeger all-in-one — in-memory for pilot (no persistent storage required)
+# Satisfies: Req 17 (distributed tracing), Req 25 (trace-based latency), Design §8
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jaeger
+  namespace: railos
+  labels:
+    app: jaeger
+    app.kubernetes.io/name: jaeger
+    app.kubernetes.io/part-of: railos-pilot
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: jaeger
+  template:
+    metadata:
+      labels:
+        app: jaeger
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "14269"
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+      containers:
+        - name: jaeger
+          image: jaegertracing/all-in-one:1.57
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: SPAN_STORAGE_TYPE
+              value: memory
+            - name: COLLECTOR_OTLP_ENABLED
+              value: "true"
+            - name: LOG_LEVEL
+              value: warn
+          ports:
+            - name: ui
+              containerPort: 16686
+            - name: grpc-collector
+              containerPort: 14250
+            - name: admin
+              containerPort: 14269
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "256Mi"
+            limits:
+              cpu: "1000m"
+              memory: "1Gi"
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 14269
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]

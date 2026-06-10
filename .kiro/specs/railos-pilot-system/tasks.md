@@ -125,14 +125,14 @@ Estimated implementation phases:
   - [ ] 3.7 Write unit tests for each adapter using recorded real-format payload fixtures (NTES, OMRS, WILD)
 
 - [ ] 4. Data Pipeline (Kafka + Flink + Storage)
-  - [ ] 4.1 Create all Kafka topics per §4.1 of design (track.sensor.*, train.telemetry.*, vision.defect.*, signaling.state, monitoring.alerts.*, dead-letter.*, audit.*)
+  - [x] 4.1 Create all Kafka topics per §4.1 of design (track.sensor.*, train.telemetry.*, vision.defect.*, signaling.state, monitoring.alerts.*, dead-letter.*, audit.*)
   - [ ] 4.2 Implement canonical sensor event JSON schema (§4.3) with schema registry (Confluent Schema Registry or Apicurio)
   - [ ] 4.3 Implement schema validation Flink operator: valid events → destination topic; invalid → dead-letter.schema-failures + `SCHEMA_VALIDATION_FAILURE` alert
   - [ ] 4.4 Implement InfluxDB writer with 3-retry exponential back-off; emit `STORAGE_WRITE_FAILURE` on exhaustion without silently discarding events
   - [ ] 4.5 Implement 90-day retention policy on InfluxDB raw sensor events; archive to Delta Lake on expiry
   - [ ] 4.6 Implement Flink stream processing jobs: sensor feature extraction, stream joins (sensor + train position + weather), anomaly rule evaluation
   - [ ] 4.7 Implement feed heartbeat watchdog: emit `FEED_UNAVAILABLE` when no heartbeat for ≥10s, maintain 500ms normalization SLA on remaining feeds
-  - [ ] 4.8 Implement throughput test harness: verify sustained 10,000 events/s ingestion across all active sensor feeds
+  - [x] 4.8 Implement throughput test harness: verify sustained 10,000 events/s ingestion across all active sensor feeds
   - [ ] 4.9 Implement Delta Lake compaction and Parquet partitioning by zone, date, and sensor type for efficient ML training queries
 
 - [ ] 5. Edge Node Software Stack
@@ -244,12 +244,12 @@ Estimated implementation phases:
   - [x] 15.4 Implement role-enforcement middleware on all RailOS service endpoints: deny out-of-scope actions with HTTP 403 + audit log entry (user identity, attempted action, timestamp)
   - [x] 15.5 Write integration test: verify each role cannot perform actions outside its defined permission scope
 
-- [ ] 16. Supply Chain Security
-  - [ ] 16.1 Integrate cosign (Sigstore) into CI/CD pipeline: sign all container images at build time; verify signatures before Kubernetes deployment
-  - [ ] 16.2 Integrate Syft: generate SBOM in CycloneDX JSON format for each deployment release; store in model governance artifact store
-  - [ ] 16.3 Integrate Grype: scan SBOM against NVD on every build; block deployment on HIGH/CRITICAL CVE detection
-  - [ ] 16.4 Implement NVD feed poller: check every 24h for new CVEs affecting components in the active SBOM; emit `CVE_ALERT` to Engineering_Team within 24h of NVD publication
-  - [ ] 16.5 Retain SBOM per deployment release for minimum 365 days in artifact store
+- [x] 16. Supply Chain Security
+  - [x] 16.1 Integrate cosign (Sigstore) into CI/CD pipeline: sign all container images at build time; verify signatures before Kubernetes deployment
+  - [x] 16.2 Integrate Syft: generate SBOM in CycloneDX JSON format for each deployment release; store in model governance artifact store
+  - [x] 16.3 Integrate Grype: scan SBOM against NVD on every build; block deployment on HIGH/CRITICAL CVE detection
+  - [x] 16.4 Implement NVD feed poller: check every 24h for new CVEs affecting components in the active SBOM; emit `CVE_ALERT` to Engineering_Team within 24h of NVD publication
+  - [x] 16.5 Retain SBOM per deployment release for minimum 365 days in artifact store
 
 - [x] 17. Container Security
   - [x] 17.1 Apply Kubernetes Pod Security Admission (restricted profile) to all RailOS namespaces: runAsNonRoot, allowPrivilegeEscalation=false, capabilities drop ALL, readOnlyRootFilesystem where feasible
@@ -264,32 +264,32 @@ Estimated implementation phases:
   - [ ] 18.4 Implement Evidently AI drift monitor: compute daily PSI rolling window for each deployed model; emit `MODEL_DRIFT_ALERT` + apply `DRIFT_WARNING` to outputs after 3 consecutive days PSI ≥ 0.2
   - [ ] 18.5 Implement ART adversarial validation: FGSM perturbation test on each model before deployment; block if primary metric degrades >15% on adversarial test set
   - [ ] 18.6 Integrate DVC for dataset versioning: track all training/evaluation dataset versions with provenance metadata (source, preprocessing steps, annotation tool version, timestamp range, approving team member)
-  - [ ] 18.7 Implement model rollback API: `POST /api/v1/models/{modelId}/rollback`; complete within 15 min without Edge_Node restart; abort with `ROLLBACK_TIMEOUT` if exceeded; return `NO_PREVIOUS_VERSION` error if no prior version exists
+  - [x] 18.7 Implement model rollback API: `POST /api/v1/models/{modelId}/rollback`; complete within 15 min without Edge_Node restart; abort with `ROLLBACK_TIMEOUT` if exceeded; return `NO_PREVIOUS_VERSION` error if no prior version exists
 
-- [ ] 19. Observability Stack
-  - [ ] 19.1 Deploy Prometheus with scrape configurations for all RailOS services; deploy Grafana with operational dashboards covering all key metrics defined in §8
-  - [ ] 19.2 Instrument all services with OpenTelemetry SDK; deploy Jaeger collector and UI for distributed trace visualization
-  - [ ] 19.3 Configure all services to emit structured JSON logs; deploy Elasticsearch + Kibana for log aggregation and search
-  - [ ] 19.4 Configure Alertmanager: route `SUBSYSTEM_DEGRADED` (>1% error rate over 5-min window) alerts to PagerDuty/SMS gateway
-  - [ ] 19.5 Implement end-to-end alert latency trace: instrument sensor_ingest → kafka_publish → flink_process → ml_inference → advisory_emit → digital_twin_render → websocket_push trace chain
-  - [ ] 19.6 Implement latency SLA monitor: log breach when e2e delivery >5s (alert ID, measured latency, pipeline stage); expose p50/p95/p99 as Prometheus metric on 1-min rolling basis
-  - [ ] 19.7 Configure telemetry retention: 30-day minimum for all Prometheus metrics; configure InfluxDB and Elasticsearch retention policies accordingly
+- [x] 19. Observability Stack
+  - [x] 19.1 Deploy Prometheus with scrape configurations for all RailOS services; deploy Grafana with operational dashboards covering all key metrics defined in §8
+  - [x] 19.2 Instrument all services with OpenTelemetry SDK; deploy Jaeger collector and UI for distributed trace visualization
+  - [x] 19.3 Configure all services to emit structured JSON logs; deploy Elasticsearch + Kibana for log aggregation and search
+  - [x] 19.4 Configure Alertmanager: route `SUBSYSTEM_DEGRADED` (>1% error rate over 5-min window) alerts to PagerDuty/SMS gateway
+  - [x] 19.5 Implement end-to-end alert latency trace: instrument sensor_ingest → kafka_publish → flink_process → ml_inference → advisory_emit → digital_twin_render → websocket_push trace chain
+  - [x] 19.6 Implement latency SLA monitor: log breach when e2e delivery >5s (alert ID, measured latency, pipeline stage); expose p50/p95/p99 as Prometheus metric on 1-min rolling basis
+  - [x] 19.7 Configure telemetry retention: 30-day minimum for all Prometheus metrics; configure InfluxDB and Elasticsearch retention policies accordingly
 
-- [ ] 20. Disaster Recovery
-  - [ ] 20.1 Verify Kafka cluster RF=3 and min.insync.replicas=2; test broker failure and automatic leader election
-  - [ ] 20.2 Configure InfluxDB continuous WAL replication to hot standby; verify replication lag ≤60s
-  - [ ] 20.3 Configure PostgreSQL Patroni HA: automatic failover; verify RPO ≤60s and RTO ≤2 min on primary failure
-  - [ ] 20.4 Configure geo-replicated backups: daily automated snapshots of all PostgreSQL databases and MLflow artifacts to geographically separate storage node
-  - [ ] 20.5 Implement daily automated restore integrity test: restore latest backup to isolated test environment; emit `BACKUP_INTEGRITY_FAILURE` alert if test fails
-  - [ ] 20.6 Document full-system restore runbook targeting RTO ≤30 min from catastrophic failure
-  - [ ] 20.7 Test 24h Edge_Node autonomous operation: simulate complete central infrastructure outage and verify local inference, buffering, and alert continuity
+- [x] 20. Disaster Recovery
+  - [x] 20.1 Verify Kafka cluster RF=3 and min.insync.replicas=2; test broker failure and automatic leader election
+  - [x] 20.2 Configure InfluxDB continuous WAL replication to hot standby; verify replication lag ≤60s
+  - [x] 20.3 Configure PostgreSQL Patroni HA: automatic failover; verify RPO ≤60s and RTO ≤2 min on primary failure
+  - [x] 20.4 Configure geo-replicated backups: daily automated snapshots of all PostgreSQL databases and MLflow artifacts to geographically separate storage node
+  - [x] 20.5 Implement daily automated restore integrity test: restore latest backup to isolated test environment; emit `BACKUP_INTEGRITY_FAILURE` alert if test fails
+  - [x] 20.6 Document full-system restore runbook targeting RTO ≤30 min from catastrophic failure
+  - [x] 20.7 Test 24h Edge_Node autonomous operation: simulate complete central infrastructure outage and verify local inference, buffering, and alert continuity
 
 - [ ] 21. Safety and Compliance
   - [ ] 21.1 Implement traceability matrix store (PostgreSQL): schema per §13.1; link requirement IDs to MLflow run IDs, hazard IDs, and verification evidence records
-  - [ ] 21.2 Implement traceability report API: `GET /api/v1/traceability/{subsystemVersion}` → JSON/PDF report within 5 min; accessible to Engineering_Team and Security_Officer roles
+  - [x] 21.2 Implement traceability report API: `GET /api/v1/traceability/{subsystemVersion}` → JSON/PDF report within 5 min; accessible to Engineering_Team and Security_Officer roles
   - [ ] 21.3 Implement hazard register (PostgreSQL append-only table per §13.2 schema): `HAZARD_REVIEW_REQUIRED` trigger on repeated anomaly patterns; accessible to Security_Officer and Engineering_Team only
   - [ ] 21.4 Implement Vault-backed configuration versioning: all thresholds, suppression windows, drift PSI values, and deployment parameters stored in Vault with immutable audit log (key, prev_value, new_value, identity, UTC timestamp)
-  - [ ] 21.5 Verify EN 50128 alignment: audit all deployed ML inference paths for deterministic behavior (no stochastic layers at inference, fixed-point quantization, version-controlled model artifacts)
+  - [x] 21.5 Verify EN 50128 alignment: audit all deployed ML inference paths for deterministic behavior (no stochastic layers at inference, fixed-point quantization, version-controlled model artifacts)
 
 - [ ] 22. Operator UI
   - [ ] 22.1 Build React + Three.js + Deck.gl operations dashboard shell: routing, authentication integration with Keycloak, session management
@@ -311,16 +311,16 @@ Estimated implementation phases:
   - [ ] 23.7 Implement benchmark test: delay predictor MAE degradation ≤15% at 3-month vs 12-month training data — Property 7
 
 - [ ] 24. Simulation Validation
-  - [ ] 24.1 Prepare held-out historical IR movement dataset: minimum 30 days of actual train movement records from NTES historical archive
-  - [ ] 24.2 Validate Digital Twin simulation engine against historical dataset: verify mean absolute position error ≤500m at all trajectory points; record result in model governance audit log
-  - [ ] 24.3 Prepare 100 historical disruption scenarios reconstructed from NTES historical data (cancelled services, delayed services, blocked segments)
-  - [ ] 24.4 Evaluate MARL_Scheduler on 100 historical disruption scenarios: verify ≥70% produce conflict-free proposals within 30s; record result in audit log
+  - [x] 24.1 Prepare held-out historical IR movement dataset: minimum 30 days of actual train movement records from NTES historical archive
+  - [x] 24.2 Validate Digital Twin simulation engine against historical dataset: verify mean absolute position error ≤500m at all trajectory points; record result in model governance audit log
+  - [x] 24.3 Prepare 100 historical disruption scenarios reconstructed from NTES historical data (cancelled services, delayed services, blocked segments)
+  - [x] 24.4 Evaluate MARL_Scheduler on 100 historical disruption scenarios: verify ≥70% produce conflict-free proposals within 30s; record result in audit log
 
 - [ ] 25. Geographic Failure Isolation
   - [ ] 25.1 Define Corridor geographic isolation zones: map contiguous station/segment sets to named zones; configure dedicated Kafka topic partitions per zone
   - [ ] 25.2 Implement zone-isolated degraded mode: on repeated `SUBSYSTEM_DEGRADED` alerts from one zone, isolate that zone's Flink processing units without affecting other zones
   - [ ] 25.3 Implement Digital Twin zone isolation indicator: display affected zone boundary with degradation reason; do not suppress advisories from unaffected zones
-  - [ ] 25.4 Write integration test: simulate zone-A subsystem failure; verify zone-B advisory throughput is unaffected
+  - [x] 25.4 Write integration test: simulate zone-A subsystem failure; verify zone-B advisory throughput is unaffected
 
 - [ ] 26. Dataset Governance
   - [ ] 26.1 Configure DVC for all training and evaluation datasets: version tag each dataset with source identifiers, preprocessing pipeline hash, annotation tool version, timestamp range, and approving Engineering_Team member

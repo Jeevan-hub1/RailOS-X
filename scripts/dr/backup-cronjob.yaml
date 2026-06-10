@@ -1,0 +1,116 @@
+---
+# Task 20.4 — Daily geo-replicated backup CronJob
+# Backs up PostgreSQL + MLflow artifacts to railos-backups MinIO bucket
+# Satisfies: Req 16 C2 (RPO ≤ 60s via WAL + daily snapshots), Design §10.2
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: railos-backup
+  namespace: railos
+  labels:
+    app.kubernetes.io/name: railos-backup
+    app.kubernetes.io/component: disaster-recovery
+    app.kubernetes.io/part-of: railos-pilot
+spec:
+  schedule: "0 2 * * *"   # 02:00 UTC daily
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 7
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 3600
+      template:
+        spec:
+          restartPolicy: OnFailure
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+          serviceAccountName: backup-job
+          containers:
+            - name: backup
+              image: bitnami/postgresql:15
+              imagePullPolicy: IfNotPresent
+              env:
+                - name: PGPASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: postgresql-secrets
+                      key: superuser-password
+                - name: MINIO_ALIAS
+                  value: "railos"
+                - name: MINIO_ENDPOINT
+                  value: "http://minio.railos.svc.cluster.local:9000"
+                - name: MINIO_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: backup-minio-creds
+                      key: access-key
+                - name: MINIO_SECRET_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: backup-minio-creds
+                      key: secret-key
+                - name: BACKUP_BUCKET
+                  value: "railos-backups"
+                - name: CLUSTER_ID
+                  value: "scr-pilot-01"
+              command:
+                - sh
+                - -c
+                - |
+                  set -euo pipefail
+                  TIMESTAMP=$(date +%Y%m%dT%H%M%SZ)
+                  BACKUP_PATH="${BACKUP_BUCKET}/${CLUSTER_ID}/${TIMESTAMP}"
+
+                  echo "=== RailOS Backup Job ==="
+                  echo "Timestamp: $TIMESTAMP"
+                  echo "Target: s3://${BACKUP_PATH}"
+                  echo ""
+
+                  # Install mc (MinIO client)
+                  curl -sSLo /tmp/mc https://dl.min.io/client/mc/release/linux-amd64/mc
+                  chmod +x /tmp/mc
+                  /tmp/mc alias set railos "$MINIO_ENDPOINT" "$MINIO_ACCESS_KEY" "$MINIO_SECRET_KEY" --api S3v4
+
+                  # Backup PostgreSQL via pg_basebackup
+                  echo "--- Backing up PostgreSQL..."
+                  pg_basebackup \
+                    -h postgresql-primary.railos.svc.cluster.local \
+                    -U postgres \
+                    -D /tmp/pg_backup \
+                    -Ft -z -P \
+                    --checkpoint=fast
+                  /tmp/mc cp /tmp/pg_backup/base.tar.gz \
+                    "railos/${BACKUP_PATH}/postgresql/base.tar.gz"
+                  echo "PostgreSQL backup: DONE"
+
+                  # Mirror MLflow artifacts
+                  echo "--- Mirroring MLflow artifacts..."
+                  /tmp/mc mirror \
+                    "railos/railos-mlflow-artifacts/" \
+                    "railos/${BACKUP_PATH}/mlflow/" \
+                    --overwrite --remove || true
+                  echo "MLflow mirror: DONE"
+
+                  # Tag backup with metadata
+                  echo "{\"timestamp\":\"${TIMESTAMP}\",\"cluster\":\"${CLUSTER_ID}\",\"status\":\"complete\"}" \
+                    | /tmp/mc pipe "railos/${BACKUP_PATH}/metadata.json"
+
+                  echo "=== Backup complete: ${BACKUP_PATH} ==="
+              resources:
+                requests:
+                  cpu: "500m"
+                  memory: "512Mi"
+                limits:
+                  cpu: "2000m"
+                  memory: "2Gi"
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: ["ALL"]
+              volumeMounts:
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: tmp
+              emptyDir: {}

@@ -1,0 +1,101 @@
+version: "3.9"
+
+# RailOS Legacy Adapter Stack — Local Development (Task 3.6)
+#
+# Starts all three adapters (NTES, OMRS, WILD) plus a single-broker Kafka
+# for local integration testing.  NOT for production use.
+#
+# Usage:
+#   docker-compose up --build
+#
+# Adapter metrics:
+#   NTES  → http://localhost:8081/metrics
+#   OMRS  → http://localhost:8082/metrics
+#   WILD  → http://localhost:8083/metrics
+#
+# Kafka bootstrap: localhost:9092
+
+services:
+  # ── Local Kafka (KRaft mode, no ZooKeeper) ──────────────────────────────────
+  kafka:
+    image: bitnami/kafka:3.7.0
+    container_name: railos-kafka-local
+    environment:
+      KAFKA_CFG_NODE_ID: "1"
+      KAFKA_CFG_PROCESS_ROLES: "broker,controller"
+      KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: "1@kafka:9093"
+      KAFKA_CFG_LISTENERS: "PLAINTEXT://:9092,CONTROLLER://:9093"
+      KAFKA_CFG_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:9092"
+      KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT"
+      KAFKA_CFG_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+      KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_CFG_NUM_PARTITIONS: "3"
+      KAFKA_CFG_DEFAULT_REPLICATION_FACTOR: "1"
+      ALLOW_PLAINTEXT_LISTENER: "yes"
+    ports:
+      - "9092:9092"
+    healthcheck:
+      test: ["CMD", "kafka-topics.sh", "--list", "--bootstrap-server", "localhost:9092"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # ── NTES REST Adapter ───────────────────────────────────────────────────────
+  ntes-adapter:
+    build:
+      context: .
+      dockerfile: ntes/Dockerfile
+    container_name: railos-ntes-adapter
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      NTES_API_URL: "http://host.docker.internal:8090"   # mock NTES server
+      KAFKA_BOOTSTRAP_SERVERS: "kafka:9092"
+      ADAPTER_VERSION: "1.0.0"
+      METRICS_PORT: "8080"
+      POLL_INTERVAL_SECONDS: "30"
+    ports:
+      - "8081:8080"
+    restart: on-failure
+
+  # ── OMRS Stream Adapter ─────────────────────────────────────────────────────
+  omrs-adapter:
+    build:
+      context: .
+      dockerfile: omrs/Dockerfile
+    container_name: railos-omrs-adapter
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      OMRS_HOST: "host.docker.internal"
+      OMRS_PORT: "9001"
+      KAFKA_BOOTSTRAP_SERVERS: "kafka:9092"
+      ADAPTER_VERSION: "1.0.0"
+      METRICS_PORT: "8080"
+      RECONNECT_DELAY_SECONDS: "5"
+    ports:
+      - "8082:8080"
+    restart: on-failure
+
+  # ── WILD Stream Adapter ─────────────────────────────────────────────────────
+  wild-adapter:
+    build:
+      context: .
+      dockerfile: wild/Dockerfile
+    container_name: railos-wild-adapter
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      WILD_HOST: "host.docker.internal"
+      WILD_PORT: "9002"
+      KAFKA_BOOTSTRAP_SERVERS: "kafka:9092"
+      ADAPTER_VERSION: "1.0.0"
+      METRICS_PORT: "8080"
+      RECONNECT_DELAY_SECONDS: "5"
+    ports:
+      - "8083:8080"
+    restart: on-failure

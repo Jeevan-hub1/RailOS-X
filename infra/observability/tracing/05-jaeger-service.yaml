@@ -1,0 +1,23 @@
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: jaeger
+  namespace: railos
+  labels:
+    app: jaeger
+    app.kubernetes.io/part-of: railos-pilot
+spec:
+  type: ClusterIP
+  selector:
+    app: jaeger
+  ports:
+    - name: ui
+      port: 16686
+      targetPort: ui
+    - name: grpc-collector
+      port: 14250
+      targetPort: grpc-collector
+    - name: admin
+      port: 14269
+      targetPort: admin
