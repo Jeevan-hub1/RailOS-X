@@ -1,0 +1,175 @@
+---
+# HashiCorp Vault — Prometheus Alerting Rules
+#
+# Requires Prometheus Operator (PrometheusRule CRD).
+# Vault exposes Prometheus metrics at /v1/sys/metrics (unauthenticated when
+# telemetry.unauthenticated_metrics_access = true in vault.hcl).
+#
+# Key Vault metrics:
+#   vault_core_active                    — 1 if the node is the active leader
+#   vault_core_sealed                    — 1 if Vault is sealed
+#   vault_runtime_num_goroutines         — goroutine count (health indicator)
+#   vault_core_handle_request_count      — total requests handled
+#   vault_audit_log_request_failure      — count of audit log write failures
+#   vault_audit_log_response_failure     — count of audit response write failures
+#   vault_expire_num_leases              — number of active leases
+#   vault_token_count                    — total active tokens
+#
+# Satisfies:
+#   - Req 37:     Vault availability monitoring
+#   - Task 21.4:  Alert on audit log failures (immutable log must not silently fail)
+#   - Req 17:     Prometheus metrics for all Tier 4 infrastructure
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: vault-alerts
+  namespace: railos
+  labels:
+    app.kubernetes.io/name: vault
+    app.kubernetes.io/component: monitoring
+    app.kubernetes.io/part-of: railos-pilot
+    prometheus: railos-prometheus
+    role: alert-rules
+spec:
+  groups:
+    # ─── Vault Availability ──────────────────────────────────────────────────────
+    - name: vault.availability
+      interval: 30s
+      rules:
+        # Vault is not reachable — all secret reads will fail
+        - alert: VaultDown
+          expr: |
+            up{job="vault"} == 0
+          for: 1m
+          labels:
+            severity: critical
+            component: vault
+            team: railos-infra
+          annotations:
+            summary: "Vault is unreachable"
+            description: >
+              Prometheus cannot scrape the Vault metrics endpoint.
+              All RailOS services reading secrets from Vault will fail.
+              Check: kubectl get pods -n railos -l app=vault
+
+        # Vault is sealed — cannot serve any secret read requests
+        - alert: VaultSealed
+          expr: |
+            vault_core_sealed == 1
+          for: 1m
+          labels:
+            severity: critical
+            component: vault
+            team: railos-infra
+          annotations:
+            summary: "Vault is sealed"
+            description: >
+              Vault is sealed and cannot serve requests.
+              This typically happens after a pod restart.
+              Unseal Vault immediately:
+                kubectl exec -n railos vault-0 -- vault operator unseal <key>
+              For production, configure auto-unseal to prevent this.
+
+        # Vault is not the active leader — possible split-brain or failover
+        - alert: VaultNotActive
+          expr: |
+            vault_core_active == 0
+          for: 5m
+          labels:
+            severity: warning
+            component: vault
+            team: railos-infra
+          annotations:
+            summary: "Vault node is not the active leader"
+            description: >
+              The Vault node being scraped is not the active leader.
+              In a single-node deployment, this is unexpected.
+              Check Vault HA status: vault status
+
+    # ─── Audit Log Integrity ─────────────────────────────────────────────────────
+    # These are the most critical alerts: if the audit log fails to write,
+    # Vault will STOP PROCESSING REQUESTS (safety mechanism) unless there
+    # is a secondary audit device configured.
+    - name: vault.audit
+      interval: 15s
+      rules:
+        - alert: VaultAuditLogRequestFailure
+          expr: |
+            increase(vault_audit_log_request_failure[5m]) > 0
+          for: 0m    # Fire immediately — any audit log failure is critical
+          labels:
+            severity: critical
+            component: vault
+            team: railos-security
+          annotations:
+            summary: "Vault audit log request write failure detected"
+            description: >
+              Vault has failed to write {{ $value }} request(s) to the audit log
+              in the last 5 minutes. This is a critical issue:
+              - If no fallback audit device exists, Vault will BLOCK all requests
+              - The immutable configuration change log (Task 21.4) is compromised
+              Check audit log disk space: kubectl exec -n railos vault-0 -- df -h /vault/audit
+              Check audit log permissions: kubectl exec -n railos vault-0 -- ls -la /vault/audit/
+
+        - alert: VaultAuditLogResponseFailure
+          expr: |
+            increase(vault_audit_log_response_failure[5m]) > 0
+          for: 0m    # Fire immediately
+          labels:
+            severity: critical
+            component: vault
+            team: railos-security
+          annotations:
+            summary: "Vault audit log response write failure detected"
+            description: >
+              Vault has failed to write {{ $value }} response(s) to the audit log.
+              Same consequences as VaultAuditLogRequestFailure.
+              Investigate immediately to prevent Vault from blocking all requests.
+
+        # Audit log PVC is filling up — will cause audit failures if full
+        - alert: VaultAuditLogVolumeNearlyFull
+          expr: |
+            (
+              kubelet_volume_stats_used_bytes{
+                namespace="railos",
+                persistentvolumeclaim="vault-audit-vault-0"
+              }
+              /
+              kubelet_volume_stats_capacity_bytes{
+                namespace="railos",
+                persistentvolumeclaim="vault-audit-vault-0"
+              }
+            ) > 0.80
+          for: 10m
+          labels:
+            severity: warning
+            component: vault
+            team: railos-infra
+          annotations:
+            summary: "Vault audit log PVC is >80% full"
+            description: >
+              The Vault audit log PVC is {{ $value | humanizePercentage }} full.
+              If it reaches 100%, Vault will fail all requests (audit log write required).
+              Archive or expand the audit log PVC immediately.
+              Consider configuring Vault audit log rotation (max_file_size) or
+              shipping logs to external storage.
+
+    # ─── Vault Performance ───────────────────────────────────────────────────────
+    - name: vault.performance
+      interval: 60s
+      rules:
+        # High number of lease expirations may indicate misconfigured TTLs
+        - alert: VaultHighLeaseCount
+          expr: |
+            vault_expire_num_leases > 10000
+          for: 15m
+          labels:
+            severity: warning
+            component: vault
+            team: railos-infra
+          annotations:
+            summary: "Vault has >10,000 active leases"
+            description: >
+              Vault currently has {{ $value }} active leases.
+              A large number of leases can degrade Vault performance.
+              Review token and secret TTL configurations to ensure leases expire appropriately.

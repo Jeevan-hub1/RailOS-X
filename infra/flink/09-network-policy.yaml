@@ -1,0 +1,192 @@
+---
+# Flink NetworkPolicies — IEC 62443 Zone 2 isolation (Req 23)
+#
+# Restricts Flink pod traffic to only the required communication paths:
+#   - JobManager ↔ TaskManagers (RPC + BLOB + data transfer)
+#   - Flink → Kafka (consumer)
+#   - Flink → InfluxDB (write)
+#   - Flink → MinIO/S3 (Delta Lake write)
+#   - Prometheus → Flink pods (metrics scrape)
+#   - Flink REST API ← internal clients (job submission)
+#
+# All other ingress and egress is denied by default.
+#
+# Satisfies:
+#   - Requirement 23:  IEC 62443 Zone 2 — monitored conduit, no direct Zone 3/4 access
+#   - Requirement 39:  Pod security hardening
+
+# ─── Ingress: JobManager ──────────────────────────────────────────────────────
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: flink-jobmanager-ingress
+  namespace: railos
+  labels:
+    app: flink
+    app.kubernetes.io/name: flink
+    app.kubernetes.io/part-of: railos-pilot
+spec:
+  podSelector:
+    matchLabels:
+      app: flink
+      component: jobmanager
+  policyTypes:
+    - Ingress
+  ingress:
+    # TaskManagers → JobManager RPC + BLOB
+    - from:
+        - podSelector:
+            matchLabels:
+              app: flink
+              component: taskmanager
+      ports:
+        - port: 6123    # RPC
+          protocol: TCP
+        - port: 6124    # BLOB
+          protocol: TCP
+    # Internal clients (e.g., CI job submission pods) → REST API
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: railos
+      ports:
+        - port: 8081    # REST
+          protocol: TCP
+    # Prometheus → JobManager metrics
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+        - podSelector:
+            matchLabels:
+              app: prometheus
+      ports:
+        - port: 9249    # Prometheus metrics
+          protocol: TCP
+
+---
+# ─── Ingress: TaskManagers ────────────────────────────────────────────────────
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: flink-taskmanager-ingress
+  namespace: railos
+  labels:
+    app: flink
+    app.kubernetes.io/name: flink
+    app.kubernetes.io/part-of: railos-pilot
+spec:
+  podSelector:
+    matchLabels:
+      app: flink
+      component: taskmanager
+  policyTypes:
+    - Ingress
+  ingress:
+    # JobManager → TaskManagers (task scheduling, heartbeat)
+    - from:
+        - podSelector:
+            matchLabels:
+              app: flink
+              component: jobmanager
+      ports:
+        - port: 6121    # Data
+          protocol: TCP
+        - port: 6122    # IPC
+          protocol: TCP
+    # TaskManager ↔ TaskManager (shuffle data exchange)
+    - from:
+        - podSelector:
+            matchLabels:
+              app: flink
+              component: taskmanager
+      ports:
+        - port: 6121
+          protocol: TCP
+    # Prometheus → TaskManagers metrics
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+        - podSelector:
+            matchLabels:
+              app: prometheus
+      ports:
+        - port: 9249
+          protocol: TCP
+
+---
+# ─── Egress: Flink cluster (all pods) ────────────────────────────────────────
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: flink-egress
+  namespace: railos
+  labels:
+    app: flink
+    app.kubernetes.io/name: flink
+    app.kubernetes.io/part-of: railos-pilot
+spec:
+  podSelector:
+    matchLabels:
+      app: flink
+  policyTypes:
+    - Egress
+  egress:
+    # DNS resolution (kube-dns)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # JobManager ↔ TaskManager internal communication
+    - to:
+        - podSelector:
+            matchLabels:
+              app: flink
+      ports:
+        - port: 6121
+          protocol: TCP
+        - port: 6122
+          protocol: TCP
+        - port: 6123
+          protocol: TCP
+        - port: 6124
+          protocol: TCP
+    # Flink → Kafka (consumer — port 9092 plain, 9093 TLS)
+    - to:
+        - podSelector:
+            matchLabels:
+              app: kafka
+      ports:
+        - port: 9092
+          protocol: TCP
+        - port: 9093
+          protocol: TCP
+    # Flink → InfluxDB (write time-series data — Req 1 C4)
+    - to:
+        - podSelector:
+            matchLabels:
+              app: influxdb
+      ports:
+        - port: 8086
+          protocol: TCP
+    # Flink → MinIO (Delta Lake / checkpoint S3-compatible storage)
+    - to:
+        - podSelector:
+            matchLabels:
+              app: minio
+      ports:
+        - port: 9000
+          protocol: TCP
+    # Kubernetes API server (Kubernetes-native HA ConfigMap leases)
+    - to: []
+      ports:
+        - port: 443
+          protocol: TCP
+        - port: 6443
+          protocol: TCP

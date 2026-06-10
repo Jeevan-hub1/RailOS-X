@@ -1,0 +1,215 @@
+---
+# Prometheus AlertingRules — InfluxDB Replication Lag and Health
+#
+# These rules monitor:
+#   1. Replication lag on both primary (WAL streamer) and standby (WAL receiver)
+#   2. InfluxDB pod availability (primary and standby)
+#   3. Write throughput anomalies
+#   4. Query latency SLA (feeds Digital Twin ≤5s refresh requirement)
+#
+# Satisfies:
+#   - Requirement 15/16:  Replication lag ≤60s; alert before RPO breach
+#   - Design §10.1:       RPO 60s, RTO <5 min — alerting is the mechanism
+#   - Requirement 25:     End-to-end latency monitoring
+#
+# Assumes Prometheus Operator is deployed and watching PrometheusRule CRDs.
+# If using plain Prometheus (no operator), copy the 'groups' block into
+# your prometheus.rules.yaml file.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: influxdb-alerts
+  namespace: railos
+  labels:
+    app: influxdb
+    app.kubernetes.io/name: influxdb
+    app.kubernetes.io/component: monitoring
+    app.kubernetes.io/part-of: railos-pilot
+    # This label enables Prometheus Operator to pick up the rule
+    prometheus: railos-prometheus
+    role: alert-rules
+spec:
+  groups:
+    # ─── Replication Lag Alerts ─────────────────────────────────────────────────
+    - name: influxdb.replication
+      interval: 15s    # Evaluate every 15s — lag can grow quickly
+      rules:
+        # Warning: lag approaching the 60s RPO threshold
+        - alert: InfluxDBReplicationLagWarning
+          expr: |
+            influxdb_replication_lag_seconds{job="influxdb-primary"} > 30
+          for: 1m
+          labels:
+            severity: warning
+            team: infrastructure
+            subsystem: influxdb
+          annotations:
+            summary: "InfluxDB WAL replication lag is elevated"
+            description: >
+              InfluxDB WAL replication lag on primary {{ $labels.instance }} is
+              {{ $value | humanizeDuration }}. If this persists, RPO of 60s may be breached.
+              Investigate: kubectl logs -n railos -l app=influxdb-primary -c wal-streamer
+            runbook_url: "https://wiki.railos.internal/runbooks/influxdb-replication-lag"
+
+        # Critical: lag has exceeded the 60s RPO requirement (Req 15/16)
+        - alert: InfluxDBReplicationLagCritical
+          expr: |
+            influxdb_replication_lag_seconds{job="influxdb-primary"} > 60
+            or
+            influxdb_replication_lag_seconds{job="influxdb-standby"} > 60
+          for: 30s
+          labels:
+            severity: critical
+            team: infrastructure
+            subsystem: influxdb
+            requirement: "REQ-15-16"
+          annotations:
+            summary: "InfluxDB WAL replication lag EXCEEDS RPO of 60s"
+            description: >
+              InfluxDB WAL replication lag is {{ $value | humanizeDuration }}, exceeding
+              the required RPO of 60 seconds (Requirement 15/16).
+              Immediate action required — data loss risk if primary fails.
+              Instance: {{ $labels.instance }}, job: {{ $labels.job }}
+            runbook_url: "https://wiki.railos.internal/runbooks/influxdb-rpo-breach"
+
+        # Standby WAL receiver has stopped receiving segments
+        - alert: InfluxDBReplicationStalled
+          expr: |
+            increase(influxdb_wal_segments_received_total{job="influxdb-standby"}[5m]) == 0
+            and
+            influxdb_write_points_total{job="influxdb-primary"} > 0
+          for: 5m
+          labels:
+            severity: critical
+            team: infrastructure
+            subsystem: influxdb
+          annotations:
+            summary: "InfluxDB WAL replication has stalled"
+            description: >
+              The standby InfluxDB has not received any WAL segments in the last 5 minutes
+              while the primary is actively writing. Replication connection may be broken.
+              Check: kubectl logs -n railos -l app=influxdb-standby -c wal-receiver
+            runbook_url: "https://wiki.railos.internal/runbooks/influxdb-replication-stalled"
+
+    # ─── Availability Alerts ────────────────────────────────────────────────────
+    - name: influxdb.availability
+      interval: 30s
+      rules:
+        # Primary pod is not ready — all writes are blocked
+        - alert: InfluxDBPrimaryDown
+          expr: |
+            kube_pod_status_ready{namespace="railos", pod=~"influxdb-primary-.*", condition="true"} == 0
+          for: 30s
+          labels:
+            severity: critical
+            team: infrastructure
+            subsystem: influxdb
+            requirement: "REQ-15-16"
+          annotations:
+            summary: "InfluxDB primary pod is not ready"
+            description: >
+              The InfluxDB primary pod {{ $labels.pod }} in namespace {{ $labels.namespace }}
+              is not in Ready state. The Data_Pipeline Flink writer will start failing writes.
+              Initiate failover procedure if primary does not recover within 2 minutes.
+            runbook_url: "https://wiki.railos.internal/runbooks/influxdb-failover"
+
+        # Standby pod is not ready — no hot standby available, RPO guarantee suspended
+        - alert: InfluxDBStandbyDown
+          expr: |
+            kube_pod_status_ready{namespace="railos", pod=~"influxdb-standby-.*", condition="true"} == 0
+          for: 2m
+          labels:
+            severity: warning
+            team: infrastructure
+            subsystem: influxdb
+          annotations:
+            summary: "InfluxDB standby pod is not ready — RPO guarantee suspended"
+            description: >
+              The InfluxDB standby pod {{ $labels.pod }} is not ready.
+              While the primary is healthy, the hot standby is unavailable.
+              A primary failure now would exceed the RTO <5 min target.
+              Investigate immediately: kubectl describe pod {{ $labels.pod }} -n railos
+
+        # Both primary and standby are down — complete InfluxDB outage
+        - alert: InfluxDBTotalOutage
+          expr: |
+            (
+              kube_pod_status_ready{namespace="railos", pod=~"influxdb-primary-.*", condition="true"} == 0
+            )
+            and
+            (
+              kube_pod_status_ready{namespace="railos", pod=~"influxdb-standby-.*", condition="true"} == 0
+            )
+          for: 1m
+          labels:
+            severity: critical
+            team: infrastructure
+            subsystem: influxdb
+            pagerduty: "true"
+          annotations:
+            summary: "CRITICAL: Both InfluxDB primary and standby are down"
+            description: >
+              Both InfluxDB primary and standby pods are unavailable.
+              The Data_Pipeline, Digital Twin, and all real-time features are impacted.
+              Initiate full recovery procedure immediately.
+            runbook_url: "https://wiki.railos.internal/runbooks/influxdb-total-recovery"
+
+    # ─── Performance / SLA Alerts ───────────────────────────────────────────────
+    - name: influxdb.performance
+      interval: 30s
+      rules:
+        # Write latency is high — may cause Flink writer backpressure
+        - alert: InfluxDBWriteLatencyHigh
+          expr: |
+            histogram_quantile(0.95,
+              rate(influxdb_http_request_duration_seconds_bucket{
+                job="influxdb-primary", handler="write"
+              }[5m])
+            ) > 1.0
+          for: 5m
+          labels:
+            severity: warning
+            team: infrastructure
+            subsystem: influxdb
+          annotations:
+            summary: "InfluxDB write P95 latency exceeds 1 second"
+            description: >
+              InfluxDB write P95 latency is {{ $value | humanizeDuration }} on
+              {{ $labels.instance }}. This may cause Flink writer backpressure
+              and ultimately violate the 500ms normalization SLA (Requirement 1 C2).
+
+        # Query latency high — may delay Digital Twin state store reads
+        - alert: InfluxDBQueryLatencyHigh
+          expr: |
+            histogram_quantile(0.95,
+              rate(influxdb_http_request_duration_seconds_bucket{
+                job="influxdb-primary", handler="query"
+              }[5m])
+            ) > 3.0
+          for: 5m
+          labels:
+            severity: warning
+            team: infrastructure
+            subsystem: influxdb
+          annotations:
+            summary: "InfluxDB query P95 latency exceeds 3 seconds"
+            description: >
+              InfluxDB query P95 latency is {{ $value | humanizeDuration }}.
+              Digital Twin position refresh (≤5s, Requirement 8 C1) may be at risk.
+
+        # Write points throughput drop — potential data loss or pipeline stall
+        - alert: InfluxDBWriteThroughputDrop
+          expr: |
+            rate(influxdb_write_points_total{job="influxdb-primary"}[5m])
+            < 0.1 * avg_over_time(rate(influxdb_write_points_total{job="influxdb-primary"}[5m])[1h:5m])
+          for: 10m
+          labels:
+            severity: warning
+            team: infrastructure
+            subsystem: influxdb
+          annotations:
+            summary: "InfluxDB write throughput has dropped >90% from 1h average"
+            description: >
+              InfluxDB write throughput on {{ $labels.instance }} has dropped significantly.
+              Current rate: {{ $value | humanize }} points/s.
+              This may indicate a Flink pipeline stall or network partition.

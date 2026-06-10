@@ -1,0 +1,92 @@
+---
+# MLflow Tracking Server — Configuration ConfigMap
+#
+# Contains server startup arguments and environment configuration.
+# Credentials (DB password, MinIO keys) come from 01-secrets.yaml.
+#
+# Backend store:   PostgreSQL (Patroni cluster) — tracking metadata, runs, params, metrics
+# Artifact store:  MinIO at s3://railos-mlflow-artifacts (geo-replicated via MinIO erasure)
+# Server port:     5000 (ClusterIP, exposed by 03-services.yaml)
+#
+# MLflow MAJOR.MINOR.PATCH versioning (Req 11 C1):
+#   Model versions must follow MAJOR.MINOR.PATCH semver convention.
+#   The MLflow Model Registry enforces sequential integer versions internally;
+#   MAJOR.MINOR.PATCH tags are stored as model version tags and used by the
+#   RailOS model governance workflow (Task 21.1 traceability matrix).
+#
+# Satisfies:
+#   - Req 11:       MLflow as the model registry and artifact store for all ML models
+#   - Design §4.2:  MLflow Registry in Tier 4 Central Core
+#   - Design §10.1: Primary + read replica with geo-replicated S3 artifact store
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mlflow-config
+  namespace: railos
+  labels:
+    app.kubernetes.io/name: mlflow
+    app.kubernetes.io/component: ml-tracking
+    app.kubernetes.io/part-of: railos-pilot
+    app.kubernetes.io/version: "2.13"
+data:
+  # ── MinIO S3 endpoint configuration ────────────────────────────────────────
+  # MLflow uses boto3 for S3; these env vars override the default AWS endpoint.
+  MLFLOW_S3_ENDPOINT_URL: "http://minio.railos.svc.cluster.local:9000"
+  MLFLOW_S3_IGNORE_TLS: "true"
+
+  # ── Server configuration ────────────────────────────────────────────────────
+  MLFLOW_HOST: "0.0.0.0"
+  MLFLOW_PORT: "5000"
+  MLFLOW_WORKERS: "4"
+
+  # Artifact root (s3:// URI — credentials come from Secret)
+  MLFLOW_DEFAULT_ARTIFACT_ROOT: "s3://railos-mlflow-artifacts"
+
+  # ── Gunicorn tuning ─────────────────────────────────────────────────────────
+  # MLflow uses gunicorn as its WSGI server. Tune workers for concurrent requests.
+  GUNICORN_CMD_ARGS: "--timeout=120 --graceful-timeout=30 --keep-alive=5"
+
+  # ── Model versioning convention (Req 11 C1) ─────────────────────────────────
+  # This tag name is used by the model governance workflow to store MAJOR.MINOR.PATCH
+  # version strings as model version tags in the MLflow Model Registry.
+  # Convention:
+  #   Tag key:   railos_model_version
+  #   Tag value: MAJOR.MINOR.PATCH  (e.g., "2.1.3")
+  RAILOS_MODEL_VERSION_TAG_KEY: "railos_model_version"
+
+  # Requirement tag key — links MLflow run IDs to requirement IDs (Task 21.1)
+  RAILOS_REQUIREMENT_TAG_KEY: "railos_requirement_id"
+
+  # Traceability tag key — links MLflow runs to Federated Learning round IDs (Req 11 C4)
+  RAILOS_FL_ROUND_TAG_KEY: "railos_fl_round_id"
+
+  # ── Postgres connection pool (for 2 replicas sharing the same DB) ───────────
+  MLFLOW_DB_POOL_SIZE: "5"
+  MLFLOW_DB_MAX_OVERFLOW: "10"
+  MLFLOW_DB_POOL_TIMEOUT: "30"
+  MLFLOW_DB_POOL_RECYCLE: "300"
+
+  # ── MLflow startup script ────────────────────────────────────────────────────
+  # Entrypoint that initializes the DB schema before starting the server.
+  start.sh: |
+    #!/bin/sh
+    set -e
+
+    echo "=== MLflow Tracking Server startup ==="
+    echo "Backend store: ${MLFLOW_BACKEND_STORE_URI}"
+    echo "Artifact root: ${MLFLOW_DEFAULT_ARTIFACT_ROOT}"
+
+    # Upgrade the tracking DB schema on startup (idempotent)
+    echo "Running database upgrade..."
+    mlflow db upgrade "${MLFLOW_BACKEND_STORE_URI}"
+    echo "Database schema is up to date."
+
+    # Start the MLflow tracking server
+    echo "Starting MLflow tracking server on 0.0.0.0:5000..."
+    exec mlflow server \
+      --backend-store-uri "${MLFLOW_BACKEND_STORE_URI}" \
+      --default-artifact-root "${MLFLOW_DEFAULT_ARTIFACT_ROOT}" \
+      --host "${MLFLOW_HOST}" \
+      --port "${MLFLOW_PORT}" \
+      --workers "${MLFLOW_WORKERS}" \
+      --gunicorn-opts "${GUNICORN_CMD_ARGS}"

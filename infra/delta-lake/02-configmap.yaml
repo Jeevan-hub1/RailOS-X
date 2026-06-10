@@ -1,0 +1,67 @@
+---
+# Delta Lake Init — ConfigMap
+#
+# Spark / S3A configuration for the PySpark Delta Lake initialisation job.
+# These settings are non-secret and can be reviewed and adjusted independently
+# of the Secrets manifest.
+#
+# Key configuration areas:
+#   - S3A connector endpoint pointing at MinIO (http://minio.railos.svc.cluster.local:9000)
+#   - Delta Lake table root paths inside the railos-delta-lake bucket
+#   - Spark memory/executor sizing for the one-time init job
+#   - Hive-compatible metastore disabled (Delta Lake uses its own transaction log)
+#
+# Satisfies:
+#   - Design §4.2:   Spark + delta-spark on S3-compatible MinIO endpoint
+#   - Design §10.4:  Delta Lake cold-storage tier, table paths per retention policy
+#   - Req 1 C4:      raw_sensor_events table as archive target after 90-day InfluxDB retention
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: delta-lake-init-config
+  namespace: railos
+  labels:
+    app.kubernetes.io/name: delta-lake-init
+    app.kubernetes.io/component: storage-init
+    app.kubernetes.io/part-of: railos-pilot
+data:
+  # ─── MinIO / S3A Endpoint ──────────────────────────────────────────────────
+  # Internal ClusterIP of the MinIO S3 API (see infra/minio/03-services.yaml).
+  MINIO_ENDPOINT: "http://minio.railos.svc.cluster.local:9000"
+
+  # Path-style access is required for MinIO — virtual-hosted style is not supported
+  # unless MinIO is configured with a wildcard DNS record.
+  S3A_PATH_STYLE_ACCESS: "true"
+
+  # ─── Delta Lake Bucket and Table Paths ────────────────────────────────────
+  # Bucket created by infra/minio/06-bucket-init-job.yaml with versioning enabled.
+  DELTA_BUCKET: "s3a://railos-delta-lake"
+
+  # Table paths within the bucket — one prefix per logical table.
+  # Partitioning strategy:
+  #   raw_sensor_events    → partitioned by sensor_type / date  (high-volume, archive-scan)
+  #   inference_audit      → partitioned by date                (365-day audit, sequential scan)
+  #   security_anomaly     → partitioned by date                (365-day audit, sequential scan)
+  #   model_artifacts      → NOT partitioned (low-volume, key-lookup by modelVersion)
+  DELTA_TABLE_RAW_SENSOR_EVENTS: "s3a://railos-delta-lake/tables/raw_sensor_events"
+  DELTA_TABLE_INFERENCE_AUDIT:   "s3a://railos-delta-lake/tables/inference_audit"
+  DELTA_TABLE_SECURITY_ANOMALY:  "s3a://railos-delta-lake/tables/security_anomaly"
+  DELTA_TABLE_MODEL_ARTIFACTS:   "s3a://railos-delta-lake/tables/model_artifacts"
+
+  # ─── Spark Configuration ──────────────────────────────────────────────────
+  # The init job is a one-time DDL-only operation (CREATE TABLE IF NOT EXISTS).
+  # It does not process data, so a single executor with 2 GB is sufficient.
+  SPARK_MASTER: "local[2]"
+  SPARK_DRIVER_MEMORY: "2g"
+  SPARK_EXECUTOR_MEMORY: "2g"
+
+  # delta-spark version must be compatible with the Spark version in the Dockerfile.
+  # delta-spark 3.2.x requires Spark 3.5.x.
+  DELTA_SPARK_VERSION: "3.2.0"
+  SPARK_VERSION: "3.5.1"
+
+  # Hadoop AWS JARs version — must match the hadoop version bundled with the Spark distribution.
+  HADOOP_AWS_VERSION: "3.3.4"
+
+  # ─── Spark Log Level ──────────────────────────────────────────────────────
+  SPARK_LOG_LEVEL: "WARN"

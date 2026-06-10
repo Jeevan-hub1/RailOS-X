@@ -1,0 +1,51 @@
+---
+# PodDisruptionBudget — InfluxDB Primary
+#
+# Prevents Kubernetes from evicting the primary pod during voluntary disruptions
+# (e.g., node drain for upgrades) while replication lag is outside tolerance.
+# This ensures RPO is not compromised during maintenance windows.
+#
+# Policy: minAvailable=1 means the primary pod must remain running.
+# During planned node drain, the operator should:
+#   1. Verify replication lag < 10s before proceeding
+#   2. Manually delete the PDB to allow drain if lag is acceptable
+#   3. Restore the PDB after the primary restarts on the new node
+#
+# Satisfies: Requirement 15/16 (RPO ≤60s, RTO <5 min)
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: influxdb-primary-pdb
+  namespace: railos
+  labels:
+    app: influxdb-primary
+    app.kubernetes.io/name: influxdb
+    app.kubernetes.io/component: time-series-primary
+    app.kubernetes.io/part-of: railos-pilot
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: influxdb-primary
+
+---
+# PodDisruptionBudget — InfluxDB Standby
+#
+# Ensures the standby pod is not disrupted at the same time as a primary
+# maintenance event. Combined with the primary PDB, this prevents both
+# nodes from being unavailable simultaneously.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: influxdb-standby-pdb
+  namespace: railos
+  labels:
+    app: influxdb-standby
+    app.kubernetes.io/name: influxdb
+    app.kubernetes.io/component: time-series-standby
+    app.kubernetes.io/part-of: railos-pilot
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: influxdb-standby

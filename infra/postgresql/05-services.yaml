@@ -1,0 +1,123 @@
+---
+# PostgreSQL Services
+#
+# Three services are created:
+#   1. postgresql-primary   — Read/write service, routes only to the Patroni leader.
+#      Patroni labels the leader pod with role=master; this selector matches it.
+#   2. postgresql-replicas  — Read-only service, routes to all replica pods.
+#      Used for analytics queries, read replicas, postgres_exporter scraping.
+#   3. postgresql-headless  — Headless service for StatefulSet DNS resolution.
+#      Each pod gets a stable DNS name: postgresql-<ordinal>.postgresql-headless.railos.svc.cluster.local
+#
+# Satisfies:
+#   - Design §10.1: primary + 2 replicas HA topology
+#   - Requirement 15/16: automatic traffic rerouting on failover (leader label flip)
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgresql-primary
+  namespace: railos
+  labels:
+    app: postgresql-patroni
+    app.kubernetes.io/name: postgresql-patroni
+    app.kubernetes.io/component: database-primary
+    app.kubernetes.io/part-of: railos-pilot
+  annotations:
+    # Prometheus ServiceMonitor auto-discovery (if using prometheus-operator)
+    prometheus.io/scrape: "false"   # primary is read/write; exporter is on replica svc
+spec:
+  type: ClusterIP
+  selector:
+    app: postgresql-patroni
+    # Patroni dynamically sets this label on the leader pod to 'master'
+    role: master
+  ports:
+    - name: postgresql
+      port: 5432
+      targetPort: postgresql
+      protocol: TCP
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgresql-replicas
+  namespace: railos
+  labels:
+    app: postgresql-patroni
+    app.kubernetes.io/name: postgresql-patroni
+    app.kubernetes.io/component: database-replica
+    app.kubernetes.io/part-of: railos-pilot
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "9187"
+    prometheus.io/path: "/metrics"
+spec:
+  type: ClusterIP
+  selector:
+    app: postgresql-patroni
+    # Routes to all replica pods (role=replica)
+    role: replica
+  ports:
+    - name: postgresql
+      port: 5432
+      targetPort: postgresql
+      protocol: TCP
+    - name: metrics
+      port: 9187
+      targetPort: pg-exporter
+      protocol: TCP
+
+---
+# Headless service — required by StatefulSet for stable pod DNS names
+# Pod DNS: postgresql-0.postgresql-headless.railos.svc.cluster.local
+#          postgresql-1.postgresql-headless.railos.svc.cluster.local
+#          postgresql-2.postgresql-headless.railos.svc.cluster.local
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgresql-headless
+  namespace: railos
+  labels:
+    app: postgresql-patroni
+    app.kubernetes.io/name: postgresql-patroni
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: railos-pilot
+spec:
+  clusterIP: None   # Headless: no virtual IP, returns pod IPs directly
+  selector:
+    app: postgresql-patroni
+  ports:
+    - name: postgresql
+      port: 5432
+      targetPort: postgresql
+      protocol: TCP
+    - name: patroni-api
+      port: 8008
+      targetPort: patroni-api
+      protocol: TCP
+
+---
+# Patroni REST API service — used for health checks, switchover, and monitoring
+apiVersion: v1
+kind: Service
+metadata:
+  name: patroni-api
+  namespace: railos
+  labels:
+    app: postgresql-patroni
+    app.kubernetes.io/component: patroni-api
+    app.kubernetes.io/part-of: railos-pilot
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8008"
+    prometheus.io/path: "/metrics"
+spec:
+  type: ClusterIP
+  selector:
+    app: postgresql-patroni
+  ports:
+    - name: patroni-api
+      port: 8008
+      targetPort: patroni-api
+      protocol: TCP

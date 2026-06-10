@@ -1,0 +1,188 @@
+---
+# Prometheus AlertingRules for PostGIS spatial database
+#
+# Monitors:
+#   - pg_up:            PostGIS instance availability
+#   - Connection count: approach to max_connections=50
+#   - PVC usage:        storage headroom for GIS data
+#   - Exporter health:  postgres_exporter sidecar availability
+#
+# Requires Prometheus Operator (kube-prometheus-stack) with PrometheusRule CRD.
+# If using standalone Prometheus, copy the groups: block into your rule_files config.
+#
+# Key metrics from postgres_exporter:
+#   pg_up                           — 1 if PostgreSQL is reachable, 0 otherwise
+#   pg_stat_activity_count          — current number of active connections
+#   pg_database_size_bytes          — database size in bytes
+#   kubelet_volume_stats_used_bytes — PVC utilization (from Kubelet)
+#
+# Satisfies:
+#   - Req 17:      Prometheus observability stack integration
+#   - Design §7.1: PostGIS availability monitoring for Digital Twin
+#   - Design §8:   Prometheus alerting for infrastructure components
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: postgis-alerts
+  namespace: railos
+  labels:
+    app: postgis
+    app.kubernetes.io/name: postgis
+    app.kubernetes.io/component: monitoring
+    app.kubernetes.io/part-of: railos-pilot
+    # Label required by kube-prometheus-stack to pick up this rule file
+    prometheus: kube-prometheus
+    role: alert-rules
+spec:
+  groups:
+    # ── PostGIS Availability ──────────────────────────────────────────────────
+    - name: postgis.availability
+      interval: 30s
+      rules:
+        # pg_up = 0: PostgreSQL is not reachable — Digital Twin geospatial layer is down
+        - alert: PostGISDown
+          expr: |
+            pg_up{job=~"postgis.*", namespace="railos"} == 0
+          for: 1m
+          labels:
+            severity: critical
+            component: postgis
+            team: railos-infra
+          annotations:
+            summary: "PostGIS instance is down"
+            description: >
+              PostGIS (PostgreSQL + spatial extensions) on {{ $labels.instance }} is not
+              reachable. The Digital Twin geospatial layer (Design §7.1) is unavailable.
+              Check pod status: kubectl get pods -n railos -l app=postgis
+              Check logs:       kubectl logs -n railos postgis-0 -c postgis
+
+        # pg_up = 0 for a shorter window — warning before firing critical
+        - alert: PostGISUnreachableWarning
+          expr: |
+            pg_up{job=~"postgis.*", namespace="railos"} == 0
+          for: 30s
+          labels:
+            severity: warning
+            component: postgis
+            team: railos-infra
+          annotations:
+            summary: "PostGIS may be temporarily unreachable"
+            description: >
+              pg_up == 0 on {{ $labels.instance }} for 30s.
+              Could be a transient restart or startup probe delay.
+              Monitor for escalation to PostGISDown (1m threshold).
+
+    # ── Connection Count ──────────────────────────────────────────────────────
+    # max_connections = 50 (set in postgresql.conf)
+    - name: postgis.connections
+      interval: 60s
+      rules:
+        # Connections > 40 (80% of max_connections=50) — warn
+        - alert: PostGISConnectionsHigh
+          expr: |
+            pg_stat_activity_count{job=~"postgis.*", namespace="railos"} > 40
+          for: 5m
+          labels:
+            severity: warning
+            component: postgis
+            team: railos-infra
+          annotations:
+            summary: "PostGIS connection count is high (>80% of max_connections)"
+            description: >
+              PostGIS has {{ $value }} active connections; max_connections is 50.
+              Digital Twin services may experience connection refusals if the count
+              reaches 50. Review connection pooling in Digital Twin state store.
+
+        # Connections >= 48 (96% of max_connections=50) — critical
+        - alert: PostGISConnectionsNearLimit
+          expr: |
+            pg_stat_activity_count{job=~"postgis.*", namespace="railos"} >= 48
+          for: 2m
+          labels:
+            severity: critical
+            component: postgis
+            team: railos-infra
+          annotations:
+            summary: "PostGIS connection count near limit — new connections will be refused"
+            description: >
+              PostGIS has {{ $value }} active connections (limit: 50).
+              New connection attempts will be rejected. Immediate investigation required.
+              Consider adding a PgBouncer connection pooler in front of PostGIS.
+
+    # ── PVC Storage ───────────────────────────────────────────────────────────
+    - name: postgis.storage
+      interval: 60s
+      rules:
+        # PVC > 70% full — warn early since GIS imports (Task 13.1) can be large
+        - alert: PostGISPVCUsageHigh
+          expr: |
+            (
+              kubelet_volume_stats_used_bytes{
+                namespace="railos",
+                persistentvolumeclaim=~"postgis-data-.*"
+              }
+              /
+              kubelet_volume_stats_capacity_bytes{
+                namespace="railos",
+                persistentvolumeclaim=~"postgis-data-.*"
+              }
+            ) > 0.70
+          for: 5m
+          labels:
+            severity: warning
+            component: postgis
+            team: railos-infra
+          annotations:
+            summary: "PostGIS PVC is over 70% full"
+            description: >
+              PVC {{ $labels.persistentvolumeclaim }} is {{ $value | humanizePercentage }} full
+              (provisioned: 50 Gi). GIS data imports (Task 13.1) may fill remaining space.
+              Consider expanding the PVC or archiving old geometry snapshots.
+
+        # PVC > 90% full — critical: index rebuilds may fail
+        - alert: PostGISPVCUsageCritical
+          expr: |
+            (
+              kubelet_volume_stats_used_bytes{
+                namespace="railos",
+                persistentvolumeclaim=~"postgis-data-.*"
+              }
+              /
+              kubelet_volume_stats_capacity_bytes{
+                namespace="railos",
+                persistentvolumeclaim=~"postgis-data-.*"
+              }
+            ) > 0.90
+          for: 2m
+          labels:
+            severity: critical
+            component: postgis
+            team: railos-infra
+          annotations:
+            summary: "PostGIS PVC is over 90% full — writes and VACUUM may fail"
+            description: >
+              PVC {{ $labels.persistentvolumeclaim }} is {{ $value | humanizePercentage }} full.
+              PostgreSQL may reject writes and GIST index maintenance will fail.
+              Expand PVC immediately:
+                kubectl patch pvc postgis-data-postgis-0 -n railos \
+                  -p '{"spec":{"resources":{"requests":{"storage":"100Gi"}}}}'
+
+    # ── Exporter Health ───────────────────────────────────────────────────────
+    - name: postgis.exporter
+      interval: 60s
+      rules:
+        # postgres_exporter sidecar down — metrics and alerting are blind
+        - alert: PostGISExporterDown
+          expr: |
+            up{job=~"postgis.*", namespace="railos"} == 0
+          for: 3m
+          labels:
+            severity: warning
+            component: postgis
+            team: railos-infra
+          annotations:
+            summary: "PostGIS postgres_exporter sidecar is not responding"
+            description: >
+              The postgres_exporter sidecar for PostGIS on {{ $labels.instance }}
+              is not scraping. PostGIS availability and connection alerts are blind.
+              Check: kubectl logs -n railos postgis-0 -c postgres-exporter

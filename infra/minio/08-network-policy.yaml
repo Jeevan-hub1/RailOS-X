@@ -1,0 +1,143 @@
+---
+# MinIO NetworkPolicies
+#
+# Restricts S3 API access to only the pods that legitimately need it:
+#   - Flink TaskManagers (write Parquet to Delta Lake, write checkpoints)
+#   - MLflow tracking server (write model artifacts)
+#   - Prometheus (scrape metrics)
+#   - The bucket-init Job (one-time setup)
+#
+# All other pods in the cluster cannot reach MinIO on port 9000.
+# The MinIO Console (port 9001) is further restricted to a dedicated
+# ops-console namespace/label to prevent general access.
+#
+# Satisfies:
+#   - Req 23:   Network isolation between IEC 62443 zones
+#   - Req 39:   Kubernetes NetworkPolicy as defence-in-depth
+#   - Design §9.3: Pod Security / network isolation controls
+
+# ─── Ingress to MinIO S3 API (port 9000) ────────────────────────────────────
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: minio-allow-s3-api
+  namespace: railos
+  labels:
+    app.kubernetes.io/name: minio
+    app.kubernetes.io/component: network-policy
+    app.kubernetes.io/part-of: railos-pilot
+spec:
+  podSelector:
+    matchLabels:
+      app: minio
+  policyTypes:
+    - Ingress
+  ingress:
+    # Flink TaskManagers — write Parquet to Delta Lake and checkpoints
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: flink-taskmanager
+      ports:
+        - protocol: TCP
+          port: 9000
+
+    # MLflow tracking server — write model artifacts
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: mlflow
+      ports:
+        - protocol: TCP
+          port: 9000
+
+    # Prometheus — scrape metrics endpoint
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - protocol: TCP
+          port: 9000
+
+    # Bucket-init Job — one-time setup
+    - from:
+        - podSelector:
+            matchLabels:
+              app: minio-bucket-init
+      ports:
+        - protocol: TCP
+          port: 9000
+
+    # MinIO peer-to-peer cluster communication (distributed mode)
+    - from:
+        - podSelector:
+            matchLabels:
+              app: minio
+      ports:
+        - protocol: TCP
+          port: 9000
+
+---
+# ─── Ingress to MinIO Console (port 9001) ───────────────────────────────────
+# Restrict console access to pods labelled railos-ops-console=true.
+# In practice, expose the console via an authenticated Ingress or port-forward.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: minio-allow-console
+  namespace: railos
+  labels:
+    app.kubernetes.io/name: minio
+    app.kubernetes.io/component: network-policy
+    app.kubernetes.io/part-of: railos-pilot
+spec:
+  podSelector:
+    matchLabels:
+      app: minio
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              railos-ops-console: "true"
+      ports:
+        - protocol: TCP
+          port: 9001
+
+---
+# ─── Egress from MinIO (allow DNS + MinIO peer communication) ────────────────
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: minio-egress
+  namespace: railos
+  labels:
+    app.kubernetes.io/name: minio
+    app.kubernetes.io/component: network-policy
+    app.kubernetes.io/part-of: railos-pilot
+spec:
+  podSelector:
+    matchLabels:
+      app: minio
+  policyTypes:
+    - Egress
+  egress:
+    # DNS resolution
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # MinIO peer-to-peer communication (distributed erasure coding)
+    - to:
+        - podSelector:
+            matchLabels:
+              app: minio
+      ports:
+        - protocol: TCP
+          port: 9000

@@ -1,0 +1,266 @@
+---
+# Flink JobManager Deployment
+#
+# The JobManager coordinates the Flink cluster:
+#   - Accepts job submissions via REST API (port 8081)
+#   - Schedules tasks across TaskManagers
+#   - Runs CheckpointCoordinator (10 s interval — Req 1 C2)
+#   - Uses Kubernetes-native HA: leader election via ConfigMap leases
+#
+# 1 replica with Kubernetes HA; if the JM pod restarts, a new pod acquires
+# the ConfigMap lease and recovers from the latest checkpoint within seconds.
+# TaskManagers reconnect automatically (Flink's cluster-level fault tolerance).
+#
+# Satisfies:
+#   - Design §4.2:    JobManager + TaskManagers on Kubernetes
+#   - Requirement 1 C2: 500 ms normalization SLA (checkpoint-backed recovery)
+#   - Requirement 15:   HA configuration (Kubernetes lease-based leader election)
+#   - Requirement 39:   Non-root, capabilities dropped, no privilege escalation
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flink-jobmanager
+  namespace: railos
+  labels:
+    app: flink
+    component: jobmanager
+    app.kubernetes.io/name: flink
+    app.kubernetes.io/component: jobmanager
+    app.kubernetes.io/part-of: railos-pilot
+    app.kubernetes.io/version: "1.18.1"
+spec:
+  # Single active JobManager; HA is provided by Kubernetes leader election
+  # (new pod acquires ConfigMap lease on restart, not hot standby).
+  replicas: 1
+  selector:
+    matchLabels:
+      app: flink
+      component: jobmanager
+  strategy:
+    # Recreate avoids split-brain during JM pod replacement when using
+    # Kubernetes-native HA (only one JM should hold the lease at a time).
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: flink
+        component: jobmanager
+        app.kubernetes.io/name: flink
+        app.kubernetes.io/component: jobmanager
+        app.kubernetes.io/part-of: railos-pilot
+      annotations:
+        # Prometheus pod annotations — scraped by Prometheus operator or
+        # prometheus.io/scrape-based discovery (Design §8)
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9249"
+        prometheus.io/path: "/metrics"
+        # Force pod restart when ConfigMap content changes (sha256 annotation
+        # pattern — update manually or via Helm/Kustomize rollout trigger)
+        checksum/config: "update-on-configmap-change"
+    spec:
+      serviceAccountName: flink    # Required for Kubernetes-native HA (00-rbac.yaml)
+
+      # ─── Security Context (Req 39 / Design §9.3) ──────────────────────────
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 9999            # flink user in the official image
+        runAsGroup: 9999
+        fsGroup: 9999
+
+      # ─── Anti-Affinity: prefer different node from TaskManagers ───────────
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - flink
+                topologyKey: kubernetes.io/hostname
+
+      terminationGracePeriodSeconds: 60
+
+      # ─── Init Container: ensure checkpoint directory exists ───────────────
+      initContainers:
+        - name: checkpoint-dir-init
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              set -e
+              mkdir -p /flink/checkpoints/state
+              mkdir -p /flink/checkpoints/ha
+              mkdir -p /flink/checkpoints/savepoints
+              chmod -R 775 /flink/checkpoints
+              echo "Checkpoint directories ready."
+          volumeMounts:
+            - name: flink-checkpoints
+              mountPath: /flink/checkpoints
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+
+      # ─── Main Container ───────────────────────────────────────────────────
+      containers:
+        - name: jobmanager
+          image: apache/flink:1.18.1-scala_2.12-java11
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/bash
+            - -c
+            - |
+              # Copy Flink config from ConfigMap into writable location
+              cp /opt/flink/conf-readonly/flink-conf.yaml /opt/flink/conf/flink-conf.yaml
+              cp /opt/flink/conf-readonly/log4j2.properties /opt/flink/conf/log4j2.properties
+
+              # Append runtime-resolved addresses (Kubernetes DNS)
+              cat >> /opt/flink/conf/flink-conf.yaml <<EOF
+
+              # Kubernetes-native HA — appended at runtime
+              kubernetes.namespace: railos
+              kubernetes.jobmanager.service-account: flink
+              jobmanager.rpc.address: flink-jobmanager-rpc.railos.svc.cluster.local
+              jobmanager.rpc.port: 6123
+              blob.server.port: 6124
+              EOF
+
+              exec /docker-entrypoint.sh jobmanager
+
+          ports:
+            - name: rpc
+              containerPort: 6123
+              protocol: TCP
+            - name: blob
+              containerPort: 6124
+              protocol: TCP
+            - name: rest
+              containerPort: 8081
+              protocol: TCP
+            - name: metrics
+              containerPort: 9249
+              protocol: TCP
+
+          # ─── Environment — credentials from Secrets ─────────────────────
+          env:
+            - name: KAFKA_BOOTSTRAP_SERVERS
+              valueFrom:
+                secretKeyRef:
+                  name: flink-kafka-config
+                  key: KAFKA_BOOTSTRAP_SERVERS
+            - name: KAFKA_CONSUMER_GROUP_ID
+              valueFrom:
+                secretKeyRef:
+                  name: flink-kafka-config
+                  key: KAFKA_CONSUMER_GROUP_ID
+            - name: INFLUXDB_URL
+              valueFrom:
+                secretKeyRef:
+                  name: flink-influxdb-config
+                  key: INFLUXDB_URL
+            - name: INFLUXDB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: flink-influxdb-config
+                  key: INFLUXDB_TOKEN
+            - name: INFLUXDB_ORG
+              valueFrom:
+                secretKeyRef:
+                  name: flink-influxdb-config
+                  key: INFLUXDB_ORG
+            - name: INFLUXDB_BUCKET
+              valueFrom:
+                secretKeyRef:
+                  name: flink-influxdb-config
+                  key: INFLUXDB_BUCKET
+            - name: DELTA_LAKE_S3_ENDPOINT
+              valueFrom:
+                secretKeyRef:
+                  name: flink-deltalake-config
+                  key: DELTA_LAKE_S3_ENDPOINT
+            - name: DELTA_LAKE_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: flink-deltalake-config
+                  key: DELTA_LAKE_ACCESS_KEY
+            - name: DELTA_LAKE_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: flink-deltalake-config
+                  key: DELTA_LAKE_SECRET_KEY
+            # JVM tuning for JobManager
+            - name: FLINK_ENV_JAVA_OPTS
+              value: >-
+                -server
+                -XX:+UseG1GC
+                -XX:MaxGCPauseMillis=50
+                -XX:+ExplicitGCInvokesConcurrent
+                -Djava.awt.headless=true
+
+          # ─── Resources ───────────────────────────────────────────────────
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "2Gi"
+            limits:
+              cpu: "2000m"
+              memory: "2560Mi"   # Slightly above process.size (2048m) for JVM overhead
+
+          # ─── Probes ──────────────────────────────────────────────────────
+          readinessProbe:
+            httpGet:
+              path: /overview
+              port: rest
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /overview
+              port: rest
+            initialDelaySeconds: 60
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 5
+
+          # ─── Volume Mounts ───────────────────────────────────────────────
+          volumeMounts:
+            - name: flink-config-readonly
+              mountPath: /opt/flink/conf-readonly
+              readOnly: true
+            - name: flink-conf-writable
+              mountPath: /opt/flink/conf
+            - name: flink-checkpoints
+              mountPath: /flink/checkpoints
+            - name: flink-tmp
+              mountPath: /tmp
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: false   # Flink writes to /opt/flink/conf at runtime
+
+      # ─── Volumes ─────────────────────────────────────────────────────────
+      volumes:
+        - name: flink-config-readonly
+          configMap:
+            name: flink-config
+            items:
+              - key: flink-conf.yaml
+                path: flink-conf.yaml
+              - key: log4j2.properties
+                path: log4j2.properties
+        - name: flink-conf-writable
+          emptyDir: {}
+        - name: flink-checkpoints
+          persistentVolumeClaim:
+            claimName: flink-checkpoints
+        - name: flink-tmp
+          emptyDir: {}

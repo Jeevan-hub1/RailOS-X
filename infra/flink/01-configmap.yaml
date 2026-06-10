@@ -1,0 +1,166 @@
+---
+# Flink ConfigMap — flink-conf.yaml (Flink 1.18 YAML configuration)
+#
+# Satisfies:
+#   - Requirement 1 C2:  500 ms normalization SLA → checkpoint interval ≤ 10 s
+#   - Requirement 1 C6:  10,000 events/s sustained throughput → parallelism & slots
+#   - Requirement 1 C3/C7: Schema validation routing to dead-letter topics
+#   - Design §4.2:       Flink reads Kafka, writes InfluxDB and Delta Lake
+#   - Requirement 39:    Non-root, no privilege escalation
+#
+# Kafka and InfluxDB connection strings reference Secret env vars injected
+# at runtime — no credentials stored in this ConfigMap.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: flink-config
+  namespace: railos
+  labels:
+    app: flink
+    app.kubernetes.io/name: flink
+    app.kubernetes.io/component: stream-processor
+    app.kubernetes.io/part-of: railos-pilot
+data:
+  flink-conf.yaml: |
+    ################################################################################
+    # Cluster identity
+    ################################################################################
+    # Used by Kubernetes-native HA to namespace ConfigMap leases
+    kubernetes.cluster-id: railos-flink
+
+    ################################################################################
+    # High Availability — Kubernetes native
+    ################################################################################
+    high-availability.type: kubernetes
+    high-availability.storageDir: file:///flink/checkpoints/ha
+    # Kubernetes HA uses ConfigMap leases; the flink ServiceAccount holds the
+    # required RBAC permissions (see 00-rbac.yaml).
+
+    ################################################################################
+    # State backend — RocksDB for large state (sensor feature windows)
+    ################################################################################
+    state.backend: rocksdb
+    state.backend.incremental: true
+    # Checkpoint storage: PVC-backed local path (mapped to flink-checkpoints PVC).
+    # For S3-backed checkpoints, replace with:
+    #   state.checkpoints.dir: s3://your-bucket/railos/flink/checkpoints
+    state.checkpoints.dir: file:///flink/checkpoints/state
+    state.savepoints.dir: file:///flink/checkpoints/savepoints
+
+    ################################################################################
+    # Checkpointing — Req 1 C2: 500 ms normalization SLA
+    # Checkpoint every 10 s; with RocksDB incremental this is low-overhead.
+    # 3 retained checkpoints for quick recovery without reprocessing Kafka offsets.
+    ################################################################################
+    execution.checkpointing.interval: 10000
+    execution.checkpointing.mode: EXACTLY_ONCE
+    execution.checkpointing.min-pause: 5000
+    execution.checkpointing.timeout: 60000
+    execution.checkpointing.max-concurrent-checkpoints: 1
+    state.checkpoints.num-retained: 3
+
+    ################################################################################
+    # Parallelism — Req 1 C6: 10,000 events/s
+    # Default parallelism = number of Task Manager task slots (3 TMs × 4 slots = 12).
+    # Individual jobs can override this at submission time.
+    ################################################################################
+    parallelism.default: 12
+    taskmanager.numberOfTaskSlots: 4
+
+    ################################################################################
+    # JobManager memory
+    ################################################################################
+    jobmanager.memory.process.size: 2048m
+    jobmanager.memory.flink.size: 1600m
+
+    ################################################################################
+    # TaskManager memory
+    ################################################################################
+    taskmanager.memory.process.size: 4096m
+    taskmanager.memory.flink.size: 3200m
+    # RocksDB managed memory fraction (of Flink memory)
+    taskmanager.memory.managed.fraction: 0.40
+
+    ################################################################################
+    # Network / buffer tuning for high-throughput sensor ingestion
+    ################################################################################
+    taskmanager.network.memory.fraction: 0.15
+    taskmanager.network.memory.min: 64mb
+    taskmanager.network.memory.max: 1gb
+    # Credit-based flow control
+    taskmanager.network.detailed-metrics: true
+
+    ################################################################################
+    # Restart strategy — exponential backoff, max 10 restarts
+    ################################################################################
+    restart-strategy: exponential-delay
+    restart-strategy.exponential-delay.initial-backoff: 1s
+    restart-strategy.exponential-delay.max-backoff: 60s
+    restart-strategy.exponential-delay.backoff-multiplier: 2.0
+    restart-strategy.exponential-delay.reset-backoff-threshold: 10min
+    restart-strategy.exponential-delay.jitter-factor: 0.1
+    restart-strategy.exponential-delay.attempts-before-reset-backoff: 10
+
+    ################################################################################
+    # Metrics — Prometheus reporter (Design §8)
+    ################################################################################
+    metrics.reporters: prometheus
+    metrics.reporter.prometheus.factory.class: org.apache.flink.metrics.prometheus.PrometheusReporterFactory
+    metrics.reporter.prometheus.port: 9249
+    # Expose job-level latency histograms (required for Req 1 C2 SLA tracking)
+    metrics.latency.history-size: 128
+    metrics.latency.interval: 5000
+
+    ################################################################################
+    # Kafka connector defaults — actual bootstrap addresses injected via env vars
+    # (KAFKA_BOOTSTRAP_SERVERS populated from flink-kafka-config Secret)
+    ################################################################################
+    # These are referenced in job code via System.getenv(); they are NOT parsed
+    # by Flink itself from flink-conf.yaml, but kept here for documentation.
+    # kafka.bootstrap.servers: ${KAFKA_BOOTSTRAP_SERVERS}
+
+    ################################################################################
+    # InfluxDB write endpoint — injected via env var INFLUXDB_URL
+    ################################################################################
+    # influxdb.url: ${INFLUXDB_URL}
+
+    ################################################################################
+    # Web UI (REST API)
+    ################################################################################
+    rest.port: 8081
+    rest.bind-address: 0.0.0.0
+    # Disable job submit via web UI in production (job submissions go through REST API)
+    web.submit.enable: false
+    web.cancel.enable: false
+
+    ################################################################################
+    # Security — disable unauthenticated access
+    ################################################################################
+    security.ssl.internal.enabled: false    # enable in prod with cert-manager certs
+    security.ssl.rest.enabled: false        # enable in prod with cert-manager certs
+
+    ################################################################################
+    # Logging
+    ################################################################################
+    env.log.level: INFO
+
+  # log4j2.properties used by both JobManager and TaskManagers.
+  # JSON layout for structured log shipping to ELK (Design §8).
+  log4j2.properties: |
+    rootLogger.level = INFO
+    rootLogger.appenderRef.console.ref = ConsoleAppender
+
+    appender.console.name = ConsoleAppender
+    appender.console.type = CONSOLE
+    appender.console.layout.type = JsonTemplateLayout
+    appender.console.layout.eventTemplate = {"timestamp":{"$resolver":"timestamp","pattern":{"format":"yyyy-MM-dd'T'HH:mm:ss.SSSXXX"}},"level":{"$resolver":"level","field":"name"},"logger":{"$resolver":"logger","field":"name"},"message":{"$resolver":"message","stringified":true},"thread":{"$resolver":"thread","field":"name"},"exception":{"$resolver":"exception","field":"stackTrace","stringified":true}}
+
+    # Suppress noisy Flink internals at INFO level
+    logger.akka.name = akka
+    logger.akka.level = WARN
+    logger.kafka.name = org.apache.kafka
+    logger.kafka.level = WARN
+    logger.hadoop.name = org.apache.hadoop
+    logger.hadoop.level = WARN
+    logger.zookeeper.name = org.apache.zookeeper
+    logger.zookeeper.level = WARN

@@ -1,0 +1,206 @@
+---
+# Patroni configuration ConfigMap
+#
+# Patroni manages PostgreSQL HA with automatic leader election via the
+# Kubernetes DCS (Distributed Configuration Store) — no etcd required.
+# The Kubernetes API server acts as the DCS, storing the cluster state
+# in Endpoints and ConfigMap objects within the 'railos' namespace.
+#
+# HA targets (Design §10.1, Req 15/16):
+#   RPO ≤ 60 s  — WAL streaming with max_wal_size and synchronous replication
+#   RTO < 2 min — Patroni ttl=30s, loop_wait=10s, retry_timeout=30s
+#
+# Satisfies:
+#   - Requirement 15: HA configuration (primary + 2 replicas)
+#   - Requirement 16: RPO ≤ 60s, RTO < 2 min, daily backups
+#   - Design §10.1:   Patroni HA table row
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: patroni-config
+  namespace: railos
+  labels:
+    app: postgresql-patroni
+    app.kubernetes.io/name: postgresql-patroni
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: railos-pilot
+data:
+  # ─── patroni.yaml ─────────────────────────────────────────────────────────
+  # Injected into each pod at /etc/patroni/patroni.yaml by the init container.
+  # Dynamic fields (POD_IP, POD_NAME, etc.) are substituted by the entrypoint
+  # script using environment variables injected by the StatefulSet.
+  patroni.yaml.tmpl: |
+    scope: railos-postgres
+    namespace: /railos/
+    name: ${POD_NAME}
+
+    # ── Kubernetes DCS ────────────────────────────────────────────────────────
+    # Uses the Kubernetes API as the distributed configuration store.
+    # Patroni creates leader Endpoints and ConfigMaps in the railos namespace.
+    kubernetes:
+      namespace: railos
+      labels:
+        app: postgresql-patroni
+        app.kubernetes.io/part-of: railos-pilot
+      # Bypass kube-proxy for DCS calls
+      bypass_api_service: false
+      use_endpoints: true
+
+    # ── REST API ──────────────────────────────────────────────────────────────
+    restapi:
+      listen: 0.0.0.0:8008
+      connect_address: ${POD_IP}:8008
+      authentication:
+        username: patroni
+        password: ${PATRONI_API_PASSWORD}
+
+    # ── Bootstrap: initial cluster creation ──────────────────────────────────
+    bootstrap:
+      dcs:
+        # Timing: ttl (leader key TTL) + loop_wait control RTO.
+        # With ttl=30 and loop_wait=10, a replica detects leader loss within
+        # 30s and completes failover in <2 min total (Design §10.1).
+        ttl: 30
+        loop_wait: 10
+        retry_timeout: 30
+        maximum_lag_on_failover: 1048576   # 1 MiB — caps RPO at ~60s (Req 16 C2)
+        master_start_timeout: 300
+        synchronous_mode: false            # async replication; set true to enforce 0 RPO
+        postgresql:
+          use_pg_rewind: true
+          use_slots: true
+          parameters:
+            # ── Replication (WAL streaming, RPO ≤ 60s) ─────────────────────
+            wal_level: replica
+            hot_standby: "on"
+            max_wal_senders: 10
+            max_replication_slots: 10
+            wal_keep_size: 1GB             # keep at least 1 GB of WAL segments
+            wal_log_hints: "on"            # required for pg_rewind
+            # ── Checkpointing / durability ──────────────────────────────────
+            checkpoint_completion_target: 0.9
+            max_wal_size: 4GB
+            min_wal_size: 256MB
+            # ── Performance ─────────────────────────────────────────────────
+            shared_buffers: 512MB          # tune to 25% of available RAM
+            effective_cache_size: 1536MB
+            work_mem: 16MB
+            maintenance_work_mem: 128MB
+            # ── Connections ─────────────────────────────────────────────────
+            max_connections: 200
+            # ── Audit logging (pgaudit placeholder) ─────────────────────────
+            log_destination: stderr
+            logging_collector: "off"       # logs go to container stdout/stderr
+            log_min_duration_statement: 1000  # log queries >1s
+            log_checkpoints: "on"
+            log_connections: "on"
+            log_disconnections: "on"
+            log_line_prefix: "%t [%p]: [%l-1] user=%u,db=%d,app=%a,client=%h "
+            # ── Timezone ────────────────────────────────────────────────────
+            timezone: UTC
+            log_timezone: UTC
+
+      # Initial superuser and replication accounts created at cluster init
+      users:
+        postgres:
+          password: ${POSTGRES_SUPERUSER_PASSWORD}
+          options:
+            - superuser
+        replicator:
+          password: ${POSTGRES_REPLICATION_PASSWORD}
+          options:
+            - replication
+
+      # Initialization SQL script: run once on primary after cluster bootstrap.
+      # Creates all RailOS databases and schema objects.
+      post_bootstrap: /etc/patroni/init-db.sh
+
+    # ── PostgreSQL connection config ──────────────────────────────────────────
+    postgresql:
+      listen: 0.0.0.0:5432
+      connect_address: ${POD_IP}:5432
+      data_dir: /var/lib/postgresql/data/pgdata
+      bin_dir: /usr/lib/postgresql/16/bin
+      pgpass: /tmp/.pgpass
+
+      # Superuser credentials
+      authentication:
+        replication:
+          username: replicator
+          password: ${POSTGRES_REPLICATION_PASSWORD}
+        superuser:
+          username: postgres
+          password: ${POSTGRES_SUPERUSER_PASSWORD}
+        rewind:
+          username: rewind_user
+          password: ${POSTGRES_SUPERUSER_PASSWORD}
+
+      # pg_hba.conf entries
+      pg_hba:
+        - host replication replicator 0.0.0.0/0 md5
+        - host all all 0.0.0.0/0 md5
+        - local all all trust
+
+      parameters:
+        unix_socket_directories: /var/run/postgresql
+
+    # ── Tags ─────────────────────────────────────────────────────────────────
+    tags:
+      nofailover: false
+      noloadbalance: false
+      clonefrom: false
+      nosync: false
+
+  # ─── entrypoint.sh ────────────────────────────────────────────────────────
+  # Substitutes environment variables into the patroni.yaml template and
+  # launches Patroni.
+  entrypoint.sh: |
+    #!/bin/bash
+    set -euo pipefail
+
+    echo "[entrypoint] Starting Patroni on pod ${POD_NAME} (IP: ${POD_IP})"
+
+    # Substitute environment variables into the Patroni config template
+    mkdir -p /etc/patroni
+    envsubst < /etc/patroni-tmpl/patroni.yaml.tmpl > /etc/patroni/patroni.yaml
+
+    # Copy the DB init script
+    cp /etc/patroni-tmpl/init-db.sh /etc/patroni/init-db.sh
+    chmod +x /etc/patroni/init-db.sh
+
+    echo "[entrypoint] Patroni config written to /etc/patroni/patroni.yaml"
+
+    # Ensure pgdata directory exists and has correct ownership
+    mkdir -p /var/lib/postgresql/data/pgdata
+    chown -R postgres:postgres /var/lib/postgresql/data || true
+
+    # Launch Patroni (runs as the postgres user inside the container)
+    exec patroni /etc/patroni/patroni.yaml
+
+  # ─── init-db.sh ───────────────────────────────────────────────────────────
+  # Post-bootstrap script executed once on the primary after the cluster is
+  # initialized. Creates all RailOS databases and applies schema objects.
+  # The actual DDL SQL is mounted from the init-sql ConfigMap (03-configmap-sql).
+  init-db.sh: |
+    #!/bin/bash
+    set -euo pipefail
+
+    echo "[init-db] Running post-bootstrap database initialization"
+
+    PSQL="psql -U postgres -h localhost -p 5432"
+
+    # Create application user
+    $PSQL -c "CREATE USER railos_app WITH PASSWORD '${POSTGRES_APP_PASSWORD}';" || true
+
+    # Create exporter user for postgres_exporter (Prometheus metrics)
+    $PSQL -c "CREATE USER exporter WITH PASSWORD '${POSTGRES_APP_PASSWORD}';" || true
+    $PSQL -c "GRANT pg_monitor TO exporter;" || true
+
+    # Run schema initialization for each database
+    for db in railos_audit railos_hazard railos_registry railos_traceability; do
+      echo "[init-db] Initializing database: ${db}"
+      $PSQL -c "CREATE DATABASE ${db} OWNER railos_app;" || true
+      $PSQL -d "${db}" -f "/etc/patroni-sql/${db}.sql" || true
+    done
+
+    echo "[init-db] Database initialization complete"

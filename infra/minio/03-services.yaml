@@ -1,0 +1,83 @@
+---
+# MinIO Services
+#
+# Exposes three endpoints:
+#   1. minio          — ClusterIP S3 API (:9000) for internal use by Flink, Spark, mc
+#   2. minio-headless — Headless service used by the StatefulSet for pod DNS
+#   3. minio-console  — ClusterIP MinIO Console (:9001) for operator access
+#
+# Satisfies:
+#   - Design §4.2:  S3-compatible endpoint for Delta Lake writes from Flink
+#   - Req 17:       Prometheus scrape via minio:9000/minio/v2/metrics/cluster
+
+# ─── Headless Service (StatefulSet peer discovery) ───────────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio-headless
+  namespace: railos
+  labels:
+    app.kubernetes.io/name: minio
+    app.kubernetes.io/component: object-store
+    app.kubernetes.io/part-of: railos-pilot
+spec:
+  clusterIP: None     # Headless — DNS resolves to pod IPs directly
+  publishNotReadyAddresses: true   # Needed for initial cluster formation
+  selector:
+    app: minio
+  ports:
+    - name: s3-api
+      port: 9000
+      targetPort: 9000
+      protocol: TCP
+    - name: console
+      port: 9001
+      targetPort: 9001
+      protocol: TCP
+
+---
+# ─── ClusterIP Service — S3 API ──────────────────────────────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio
+  namespace: railos
+  labels:
+    app.kubernetes.io/name: minio
+    app.kubernetes.io/component: object-store
+    app.kubernetes.io/part-of: railos-pilot
+  annotations:
+    # Prometheus auto-discovery for MinIO metrics (Req 17, Design §9.5)
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "9000"
+    prometheus.io/path: "/minio/v2/metrics/cluster"
+spec:
+  type: ClusterIP
+  selector:
+    app: minio
+  ports:
+    - name: s3-api
+      port: 9000
+      targetPort: 9000
+      protocol: TCP
+
+---
+# ─── ClusterIP Service — MinIO Console ───────────────────────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio-console
+  namespace: railos
+  labels:
+    app.kubernetes.io/name: minio
+    app.kubernetes.io/component: object-store-console
+    app.kubernetes.io/part-of: railos-pilot
+spec:
+  type: ClusterIP
+  selector:
+    app: minio
+  ports:
+    - name: console
+      port: 9001
+      targetPort: 9001
+      protocol: TCP

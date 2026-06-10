@@ -1,0 +1,186 @@
+---
+# Strimzi Cluster Operator — namespace-scoped installation (railos namespace only).
+#
+# Source: https://github.com/strimzi/strimzi-kafka-operator/releases/tag/0.40.0
+# This manifest is a condensed, namespace-scoped version of the official install.
+# For a full cluster-wide install, use:
+#   kubectl create -f 'https://strimzi.io/install/latest?namespace=railos' -n railos
+#
+# To apply this file to install the operator:
+#   kubectl apply -f 00-strimzi-operator.yaml
+#
+# The operator watches only the 'railos' namespace (STRIMZI_NAMESPACE=railos).
+
+# ─── ServiceAccount ────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: strimzi-cluster-operator
+  namespace: railos
+  labels:
+    app: strimzi
+    app.kubernetes.io/part-of: railos-pilot
+
+---
+# ─── ClusterRole (namespace-scoped resources only) ─────────────────────────────
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: strimzi-cluster-operator
+  namespace: railos
+  labels:
+    app: strimzi
+    app.kubernetes.io/part-of: railos-pilot
+rules:
+  - apiGroups: [""]
+    resources:
+      - serviceaccounts
+      - services
+      - configmaps
+      - secrets
+      - persistentvolumeclaims
+      - pods
+      - pods/log
+      - pods/exec
+      - endpoints
+    verbs: ["get", "list", "watch", "create", "delete", "patch", "update"]
+  - apiGroups: ["apps"]
+    resources:
+      - statefulsets
+      - deployments
+      - replicasets
+    verbs: ["get", "list", "watch", "create", "delete", "patch", "update"]
+  - apiGroups: ["kafka.strimzi.io"]
+    resources:
+      - kafkas
+      - kafkas/status
+      - kafkatopics
+      - kafkatopics/status
+      - kafkausers
+      - kafkausers/status
+      - kafkabridges
+      - kafkabridges/status
+      - kafkaconnects
+      - kafkaconnects/status
+      - kafkamirrormaker2s
+      - kafkamirrormaker2s/status
+      - kafkarebalances
+      - kafkarebalances/status
+    verbs: ["get", "list", "watch", "create", "delete", "patch", "update"]
+  - apiGroups: ["policy"]
+    resources:
+      - poddisruptionbudgets
+    verbs: ["get", "list", "watch", "create", "delete", "patch", "update"]
+  - apiGroups: ["networking.k8s.io"]
+    resources:
+      - networkpolicies
+      - ingresses
+    verbs: ["get", "list", "watch", "create", "delete", "patch", "update"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources:
+      - leases
+    verbs: ["get", "list", "watch", "create", "delete", "patch", "update"]
+
+---
+# ─── RoleBinding ────────────────────────────────────────────────────────────────
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: strimzi-cluster-operator
+  namespace: railos
+  labels:
+    app: strimzi
+    app.kubernetes.io/part-of: railos-pilot
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: strimzi-cluster-operator
+subjects:
+  - kind: ServiceAccount
+    name: strimzi-cluster-operator
+    namespace: railos
+
+---
+# ─── Operator Deployment ─────────────────────────────────────────────────────────
+# NOTE: For a production install with full CRD support, apply the official Strimzi
+# install bundle first:
+#   kubectl create -f 'https://strimzi.io/install/latest?namespace=railos' -n railos
+#
+# This Deployment assumes the CRDs are already installed by the above command.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: strimzi-cluster-operator
+  namespace: railos
+  labels:
+    app: strimzi
+    name: strimzi-cluster-operator
+    app.kubernetes.io/part-of: railos-pilot
+    app.kubernetes.io/version: "0.40.0"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      name: strimzi-cluster-operator
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        name: strimzi-cluster-operator
+        app.kubernetes.io/part-of: railos-pilot
+    spec:
+      serviceAccountName: strimzi-cluster-operator
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: strimzi-cluster-operator
+          image: quay.io/strimzi/operator:0.40.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+              name: http
+          env:
+            # Scope the operator to the railos namespace only
+            - name: STRIMZI_NAMESPACE
+              value: "railos"
+            - name: STRIMZI_FULL_RECONCILIATION_INTERVAL_MS
+              value: "120000"
+            - name: STRIMZI_OPERATION_TIMEOUT_MS
+              value: "300000"
+            - name: STRIMZI_DEFAULT_KAFKA_IMAGE
+              value: "quay.io/strimzi/kafka:0.40.0-kafka-3.7.0"
+            - name: STRIMZI_DEFAULT_ZOOKEEPER_IMAGE
+              value: "quay.io/strimzi/kafka:0.40.0-kafka-3.7.0"
+            - name: STRIMZI_DEFAULT_KAFKA_INIT_IMAGE
+              value: "quay.io/strimzi/operator:0.40.0"
+            - name: STRIMZI_LOG_LEVEL
+              value: "INFO"
+          livenessProbe:
+            httpGet:
+              path: /healthy
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "384Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+      terminationGracePeriodSeconds: 30

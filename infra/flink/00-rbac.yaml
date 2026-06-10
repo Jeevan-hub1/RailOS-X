@@ -1,0 +1,69 @@
+---
+# Flink RBAC — ServiceAccount + Role + RoleBinding
+#
+# Required for Kubernetes-native HA (leader election via ConfigMap leases)
+# and for the JobManager to list/watch/patch Pod and ConfigMap resources.
+#
+# Satisfies:
+#   - Design §4.2:    Flink Kubernetes-native HA
+#   - Requirement 39: Least-privilege RBAC, non-root execution
+#   - Requirement 23: IEC 62443 Zone 2 isolation — scoped to railos namespace only
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: flink
+  namespace: railos
+  labels:
+    app: flink
+    app.kubernetes.io/name: flink
+    app.kubernetes.io/component: stream-processor
+    app.kubernetes.io/part-of: railos-pilot
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: flink
+  namespace: railos
+  labels:
+    app: flink
+    app.kubernetes.io/name: flink
+    app.kubernetes.io/component: stream-processor
+    app.kubernetes.io/part-of: railos-pilot
+rules:
+  # ConfigMap leases for Kubernetes-native HA leader election
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Pod inspection for TaskManager registration and heartbeat
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  # Events for operational visibility
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+  # PVC binding status (Flink checks checkpoint PVC health on startup)
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: flink
+  namespace: railos
+  labels:
+    app: flink
+    app.kubernetes.io/name: flink
+    app.kubernetes.io/component: stream-processor
+    app.kubernetes.io/part-of: railos-pilot
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: flink
+subjects:
+  - kind: ServiceAccount
+    name: flink
+    namespace: railos

@@ -1,0 +1,110 @@
+---
+# HashiCorp Vault 1.16 — Server Configuration ConfigMap
+#
+# Contains vault.hcl: the Vault server configuration file.
+#
+# Storage backend: file — writes to /vault/data (PVC-backed)
+# Audit device:    file — writes all requests/responses to /vault/audit/audit.log
+#                  (immutable append-only log; satisfies Req 37 / Task 21.4 change logging)
+# Listener:        TCP on 0.0.0.0:8200 (TLS disabled in dev/test; enable in production)
+# API address:     http://vault.railos.svc.cluster.local:8200
+#
+# Production note:
+#   - Enable TLS on the listener using cert-manager certificates
+#   - Replace file storage with Raft integrated storage for HA
+#   - Use auto-unseal with AWS KMS / GCP Cloud KMS / Azure Key Vault
+#
+# Satisfies:
+#   - Req 37:       HashiCorp Vault stores all RailOS thresholds, suppression windows,
+#                   drift PSI values, and deployment parameters
+#   - Task 21.4:    Immutable configuration change logging via Vault audit device
+#   - Design §10.4: Retention policy values stored in Vault
+#   - Req 39:       Non-root container
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vault-config
+  namespace: railos
+  labels:
+    app.kubernetes.io/name: vault
+    app.kubernetes.io/component: secret-store
+    app.kubernetes.io/part-of: railos-pilot
+    app.kubernetes.io/version: "1.16"
+data:
+  vault.hcl: |
+    # ──────────────────────────────────────────────────────────────────────────
+    # Storage Backend — file
+    #
+    # Uses the local filesystem (PVC-backed /vault/data) for secret storage.
+    # Data is encrypted at rest using Vault's built-in AES-256-GCM encryption.
+    #
+    # For production HA, replace with:
+    #   storage "raft" {
+    #     path    = "/vault/data"
+    #     node_id = "vault-0"
+    #   }
+    # ──────────────────────────────────────────────────────────────────────────
+    storage "file" {
+      path = "/vault/data"
+    }
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Audit Device — file (immutable change logging)
+    #
+    # All Vault requests and responses are written to this log.
+    # This provides an immutable record of every configuration read/write,
+    # satisfying the audit trail requirement for RailOS operational parameters.
+    #
+    # Note: The audit log is enabled programmatically by the init Job
+    # (05-init-job.yaml) using: vault audit enable file file_path=/vault/audit/audit.log
+    # The path below is pre-created by the init container with correct permissions.
+    #
+    # Log format: JSON (one JSON object per line, includes request + response).
+    # ──────────────────────────────────────────────────────────────────────────
+    # audit "file" is enabled at runtime; the path is referenced here for documentation.
+    # Audit log path: /vault/audit/audit.log
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # TCP Listener
+    #
+    # Vault listens on port 8200.  TLS is disabled here for cluster-internal
+    # communication in development/test environments.
+    #
+    # For production: enable TLS with cert-manager certificates:
+    #   tls_cert_file = "/vault/tls/tls.crt"
+    #   tls_key_file  = "/vault/tls/tls.key"
+    #   tls_disable   = false
+    # ──────────────────────────────────────────────────────────────────────────
+    listener "tcp" {
+      address       = "0.0.0.0:8200"
+      tls_disable   = true
+      # Telemetry endpoint for Prometheus scraping
+      telemetry {
+        unauthenticated_metrics_access = true
+      }
+    }
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # API Address
+    # ──────────────────────────────────────────────────────────────────────────
+    api_addr = "http://vault.railos.svc.cluster.local:8200"
+    cluster_addr = "http://vault-0.vault-headless.railos.svc.cluster.local:8201"
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Telemetry — Prometheus metrics
+    # ──────────────────────────────────────────────────────────────────────────
+    telemetry {
+      prometheus_retention_time = "30s"
+      disable_hostname           = false
+    }
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # UI — enable the web UI for operational convenience
+    # ──────────────────────────────────────────────────────────────────────────
+    ui = true
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Log level
+    # ──────────────────────────────────────────────────────────────────────────
+    log_level = "Info"
+    log_format = "json"

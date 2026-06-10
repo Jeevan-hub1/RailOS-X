@@ -1,0 +1,513 @@
+---
+# Keycloak Realm ConfigMap
+#
+# Embeds the full railos realm export JSON as a single ConfigMap key.
+# The StatefulSet mounts this as /opt/keycloak/data/import/railos-realm.json
+# and Keycloak imports it on first startup via KC_IMPORT / --import-realm.
+#
+# Realm features configured here:
+#   - Realm name:  railos
+#   - RS256 signing key provider (for Kong JWT validation via JWKS endpoint)
+#   - JWKS endpoint exposed at:
+#       https://<keycloak>/realms/railos/protocol/openid-connect/certs
+#   - TOTP OTP policy: HmacSHA1, 6 digits, 30-second period
+#   - CONFIGURE_TOTP set as default required action (enforces MFA enrollment on
+#     first login for all accounts in the realm)
+#   - 4 realm roles: Operations_Controller, Security_Officer,
+#                    Engineering_Team, Governance_Officer
+#   - Client: railos-api
+#       * confidential (secret held separately in Vault / external secret)
+#       * serviceAccountsEnabled: true  (client-credentials grant)
+#       * authorizationServicesEnabled: true
+#       * all 4 roles assigned
+#
+# Satisfies:
+#   - Design §9.1:  4 RBAC roles, TOTP MFA, RS256 JWT, JWKS endpoint
+#   - Design §9.2:  Kong JWT plugin reads JWKS from Keycloak
+#   - Requirement 23/24:  Authenticated API gateway; role-based authorization
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: keycloak-realm-config
+  namespace: railos
+  labels:
+    app: keycloak
+    app.kubernetes.io/name: keycloak
+    app.kubernetes.io/component: identity-provider
+    app.kubernetes.io/part-of: railos-pilot
+data:
+  railos-realm.json: |
+    {
+      "id": "railos",
+      "realm": "railos",
+      "displayName": "RailOS Pilot System",
+      "displayNameHtml": "<b>RailOS</b> Pilot System",
+      "enabled": true,
+      "sslRequired": "external",
+      "registrationAllowed": false,
+      "loginWithEmailAllowed": true,
+      "duplicateEmailsAllowed": false,
+      "resetPasswordAllowed": false,
+      "editUsernameAllowed": false,
+      "bruteForceProtected": true,
+      "permanentLockout": false,
+      "maxFailureWaitSeconds": 900,
+      "minimumQuickLoginWaitSeconds": 60,
+      "waitIncrementSeconds": 60,
+      "quickLoginCheckMilliSeconds": 1000,
+      "maxDeltaTimeSeconds": 43200,
+      "failureFactor": 5,
+      "defaultSignatureAlgorithm": "RS256",
+      "revokeRefreshToken": false,
+      "refreshTokenMaxReuse": 0,
+      "accessTokenLifespan": 300,
+      "accessTokenLifespanForImplicitFlow": 900,
+      "ssoSessionIdleTimeout": 1800,
+      "ssoSessionMaxLifespan": 36000,
+      "offlineSessionIdleTimeout": 2592000,
+      "offlineSessionMaxLifespanEnabled": false,
+      "accessCodeLifespan": 60,
+      "accessCodeLifespanUserAction": 300,
+      "accessCodeLifespanLogin": 1800,
+      "actionTokenGeneratedByAdminLifespan": 43200,
+      "actionTokenGeneratedByUserLifespan": 300,
+
+      "otpPolicyType": "totp",
+      "otpPolicyAlgorithm": "HmacSHA1",
+      "otpPolicyInitialCounter": 0,
+      "otpPolicyDigits": 6,
+      "otpPolicyLookAheadWindow": 1,
+      "otpPolicyPeriod": 30,
+      "otpSupportedApplications": [
+        "FreeOTP",
+        "Google Authenticator",
+        "Microsoft Authenticator"
+      ],
+
+      "requiredActions": [
+        {
+          "alias": "CONFIGURE_TOTP",
+          "name": "Configure OTP",
+          "providerId": "CONFIGURE_TOTP",
+          "enabled": true,
+          "defaultAction": true,
+          "priority": 10,
+          "config": {}
+        },
+        {
+          "alias": "UPDATE_PASSWORD",
+          "name": "Update Password",
+          "providerId": "UPDATE_PASSWORD",
+          "enabled": true,
+          "defaultAction": false,
+          "priority": 30,
+          "config": {}
+        },
+        {
+          "alias": "VERIFY_EMAIL",
+          "name": "Verify Email",
+          "providerId": "VERIFY_EMAIL",
+          "enabled": true,
+          "defaultAction": false,
+          "priority": 50,
+          "config": {}
+        },
+        {
+          "alias": "UPDATE_PROFILE",
+          "name": "Update Profile",
+          "providerId": "UPDATE_PROFILE",
+          "enabled": true,
+          "defaultAction": false,
+          "priority": 40,
+          "config": {}
+        },
+        {
+          "alias": "TERMS_AND_CONDITIONS",
+          "name": "Terms and Conditions",
+          "providerId": "TERMS_AND_CONDITIONS",
+          "enabled": false,
+          "defaultAction": false,
+          "priority": 20,
+          "config": {}
+        }
+      ],
+
+      "roles": {
+        "realm": [
+          {
+            "id": "operations-controller-role",
+            "name": "Operations_Controller",
+            "description": "View and authorize maintenance advisories and Kavach++ advisory outputs. Human-in-the-loop authorization gate for all ML advisory outputs (Req 12).",
+            "composite": false,
+            "clientRole": false,
+            "containerId": "railos",
+            "attributes": {
+              "permissions": [
+                "advisory:view",
+                "advisory:authorize",
+                "advisory:reject",
+                "digital-twin:view"
+              ]
+            }
+          },
+          {
+            "id": "security-officer-role",
+            "name": "Security_Officer",
+            "description": "Acknowledge security anomalies, view audit logs, place and release forensic holds. IEC 62443 zone security posture management (Req 9, Req 26).",
+            "composite": false,
+            "clientRole": false,
+            "containerId": "railos",
+            "attributes": {
+              "permissions": [
+                "anomaly:acknowledge",
+                "audit-log:view",
+                "forensic-hold:place",
+                "forensic-hold:release",
+                "cybersecurity-dashboard:view"
+              ]
+            }
+          },
+          {
+            "id": "engineering-team-role",
+            "name": "Engineering_Team",
+            "description": "Deploy and rollback ML models, configure drift thresholds, view audit logs. Model governance operations (Req 11).",
+            "composite": false,
+            "clientRole": false,
+            "containerId": "railos",
+            "attributes": {
+              "permissions": [
+                "model:deploy",
+                "model:rollback",
+                "drift-threshold:configure",
+                "audit-log:view"
+              ]
+            }
+          },
+          {
+            "id": "governance-officer-role",
+            "name": "Governance_Officer",
+            "description": "Request data lineage reports, configure retention policies, place and release forensic holds. Data governance and compliance (Req 13, Req 28).",
+            "composite": false,
+            "clientRole": false,
+            "containerId": "railos",
+            "attributes": {
+              "permissions": [
+                "lineage-report:request",
+                "retention-policy:configure",
+                "forensic-hold:place",
+                "forensic-hold:release",
+                "audit-log:view"
+              ]
+            }
+          }
+        ],
+        "client": {}
+      },
+
+      "clients": [
+        {
+          "id": "railos-api-client",
+          "clientId": "railos-api",
+          "name": "RailOS API Gateway Client",
+          "description": "Confidential client used by Kong API Gateway and internal RailOS services for client-credentials grant and authorization services.",
+          "rootUrl": "",
+          "adminUrl": "",
+          "baseUrl": "",
+          "surrogateAuthRequired": false,
+          "enabled": true,
+          "alwaysDisplayInConsole": false,
+          "clientAuthenticatorType": "client-secret",
+          "redirectUris": [
+            "https://railos.internal/*"
+          ],
+          "webOrigins": [
+            "https://railos.internal"
+          ],
+          "notBefore": 0,
+          "bearerOnly": false,
+          "consentRequired": false,
+          "standardFlowEnabled": true,
+          "implicitFlowEnabled": false,
+          "directAccessGrantsEnabled": false,
+          "serviceAccountsEnabled": true,
+          "authorizationServicesEnabled": true,
+          "publicClient": false,
+          "frontchannelLogout": false,
+          "protocol": "openid-connect",
+          "attributes": {
+            "access.token.lifespan": "300",
+            "saml.assertion.signature": "false",
+            "id.token.as.detached.signature": "false",
+            "saml.multivalued.roles": "false",
+            "saml.encrypt": "false",
+            "saml.server.signature": "false",
+            "saml.server.signature.keyinfo.ext": "false",
+            "exclude.session.state.from.auth.response": "false",
+            "saml.artifact.binding": "false",
+            "saml_force_name_id_format": "false",
+            "saml.client.signature": "false",
+            "tls.client.certificate.bound.access.tokens": "false",
+            "saml.authnstatement": "false",
+            "display.on.consent.screen": "false",
+            "saml.onetimeuse.condition": "false",
+            "token.endpoint.auth.signing.alg": "RS256"
+          },
+          "authenticationFlowBindingOverrides": {},
+          "fullScopeAllowed": true,
+          "nodeReRegistrationTimeout": -1,
+          "defaultClientScopes": [
+            "web-origins",
+            "profile",
+            "roles",
+            "email"
+          ],
+          "optionalClientScopes": [
+            "address",
+            "phone",
+            "offline_access",
+            "microprofile-jwt"
+          ],
+          "authorizationSettings": {
+            "allowRemoteResourceManagement": true,
+            "policyEnforcementMode": "ENFORCING",
+            "resources": [
+              {
+                "name": "Advisory Resource",
+                "type": "urn:railos-api:resources:advisory",
+                "ownerManagedAccess": false,
+                "attributes": {},
+                "uris": ["/api/v1/advisories/*"],
+                "scopes": [
+                  {"name": "advisory:view"},
+                  {"name": "advisory:authorize"},
+                  {"name": "advisory:reject"}
+                ]
+              },
+              {
+                "name": "Anomaly Resource",
+                "type": "urn:railos-api:resources:anomaly",
+                "ownerManagedAccess": false,
+                "attributes": {},
+                "uris": ["/api/v1/anomalies/*"],
+                "scopes": [
+                  {"name": "anomaly:acknowledge"}
+                ]
+              },
+              {
+                "name": "Audit Log Resource",
+                "type": "urn:railos-api:resources:audit",
+                "ownerManagedAccess": false,
+                "attributes": {},
+                "uris": ["/api/v1/audit/*"],
+                "scopes": [
+                  {"name": "audit-log:view"}
+                ]
+              },
+              {
+                "name": "Model Management Resource",
+                "type": "urn:railos-api:resources:model",
+                "ownerManagedAccess": false,
+                "attributes": {},
+                "uris": ["/api/v1/models/*"],
+                "scopes": [
+                  {"name": "model:deploy"},
+                  {"name": "model:rollback"},
+                  {"name": "drift-threshold:configure"}
+                ]
+              },
+              {
+                "name": "Governance Resource",
+                "type": "urn:railos-api:resources:governance",
+                "ownerManagedAccess": false,
+                "attributes": {},
+                "uris": ["/api/v1/governance/*"],
+                "scopes": [
+                  {"name": "lineage-report:request"},
+                  {"name": "retention-policy:configure"},
+                  {"name": "forensic-hold:place"},
+                  {"name": "forensic-hold:release"}
+                ]
+              }
+            ],
+            "policies": [
+              {
+                "name": "Operations_Controller Policy",
+                "type": "role",
+                "logic": "POSITIVE",
+                "decisionStrategy": "UNANIMOUS",
+                "config": {
+                  "roles": "[{\"id\":\"Operations_Controller\",\"required\":true}]"
+                }
+              },
+              {
+                "name": "Security_Officer Policy",
+                "type": "role",
+                "logic": "POSITIVE",
+                "decisionStrategy": "UNANIMOUS",
+                "config": {
+                  "roles": "[{\"id\":\"Security_Officer\",\"required\":true}]"
+                }
+              },
+              {
+                "name": "Engineering_Team Policy",
+                "type": "role",
+                "logic": "POSITIVE",
+                "decisionStrategy": "UNANIMOUS",
+                "config": {
+                  "roles": "[{\"id\":\"Engineering_Team\",\"required\":true}]"
+                }
+              },
+              {
+                "name": "Governance_Officer Policy",
+                "type": "role",
+                "logic": "POSITIVE",
+                "decisionStrategy": "UNANIMOUS",
+                "config": {
+                  "roles": "[{\"id\":\"Governance_Officer\",\"required\":true}]"
+                }
+              },
+              {
+                "name": "Advisory View-Authorize Permission",
+                "type": "resource",
+                "logic": "POSITIVE",
+                "decisionStrategy": "UNANIMOUS",
+                "config": {
+                  "resources": "[\"Advisory Resource\"]",
+                  "applyPolicies": "[\"Operations_Controller Policy\"]"
+                }
+              },
+              {
+                "name": "Anomaly Acknowledge Permission",
+                "type": "resource",
+                "logic": "POSITIVE",
+                "decisionStrategy": "UNANIMOUS",
+                "config": {
+                  "resources": "[\"Anomaly Resource\"]",
+                  "applyPolicies": "[\"Security_Officer Policy\"]"
+                }
+              },
+              {
+                "name": "Audit Log View Permission",
+                "type": "resource",
+                "logic": "POSITIVE",
+                "decisionStrategy": "AFFIRMATIVE",
+                "config": {
+                  "resources": "[\"Audit Log Resource\"]",
+                  "applyPolicies": "[\"Security_Officer Policy\",\"Engineering_Team Policy\",\"Governance_Officer Policy\"]"
+                }
+              },
+              {
+                "name": "Model Management Permission",
+                "type": "resource",
+                "logic": "POSITIVE",
+                "decisionStrategy": "UNANIMOUS",
+                "config": {
+                  "resources": "[\"Model Management Resource\"]",
+                  "applyPolicies": "[\"Engineering_Team Policy\"]"
+                }
+              },
+              {
+                "name": "Governance Permission",
+                "type": "resource",
+                "logic": "POSITIVE",
+                "decisionStrategy": "AFFIRMATIVE",
+                "config": {
+                  "resources": "[\"Governance Resource\"]",
+                  "applyPolicies": "[\"Security_Officer Policy\",\"Governance_Officer Policy\"]"
+                }
+              }
+            ],
+            "scopes": [
+              {"name": "advisory:view"},
+              {"name": "advisory:authorize"},
+              {"name": "advisory:reject"},
+              {"name": "anomaly:acknowledge"},
+              {"name": "audit-log:view"},
+              {"name": "model:deploy"},
+              {"name": "model:rollback"},
+              {"name": "drift-threshold:configure"},
+              {"name": "lineage-report:request"},
+              {"name": "retention-policy:configure"},
+              {"name": "forensic-hold:place"},
+              {"name": "forensic-hold:release"}
+            ],
+            "decisionStrategy": "UNANIMOUS"
+          }
+        }
+      ],
+
+      "components": {
+        "org.keycloak.keys.KeyProvider": [
+          {
+            "id": "railos-rsa-key-provider",
+            "name": "rsa-generated",
+            "providerId": "rsa-generated",
+            "subComponents": {},
+            "config": {
+              "priority": ["100"],
+              "enabled": ["true"],
+              "active": ["true"],
+              "keySize": ["2048"],
+              "algorithm": ["RS256"]
+            }
+          }
+        ]
+      },
+
+      "browserSecurityHeaders": {
+        "contentSecurityPolicyReportOnly": "",
+        "xContentTypeOptions": "nosniff",
+        "xRobotsTag": "none",
+        "xFrameOptions": "SAMEORIGIN",
+        "xXSSProtection": "1; mode=block",
+        "contentSecurityPolicy": "frame-src 'self'; frame-ancestors 'self'; object-src 'none';",
+        "strictTransportSecurity": "max-age=31536000; includeSubDomains"
+      },
+
+      "smtpServer": {},
+      "loginTheme": "",
+      "accountTheme": "",
+      "adminTheme": "",
+      "emailTheme": "",
+      "eventsEnabled": true,
+      "eventsListeners": ["jboss-logging"],
+      "enabledEventTypes": [
+        "LOGIN",
+        "LOGIN_ERROR",
+        "LOGOUT",
+        "REGISTER",
+        "CODE_TO_TOKEN",
+        "CODE_TO_TOKEN_ERROR",
+        "CLIENT_LOGIN",
+        "CLIENT_LOGIN_ERROR",
+        "REFRESH_TOKEN",
+        "REFRESH_TOKEN_ERROR",
+        "TOKEN_EXCHANGE",
+        "TOKEN_EXCHANGE_ERROR",
+        "UPDATE_TOTP",
+        "REMOVE_TOTP",
+        "GRANT_CONSENT",
+        "UPDATE_CONSENT",
+        "REVOKE_GRANT",
+        "UPDATE_EMAIL",
+        "UPDATE_PASSWORD",
+        "UPDATE_PROFILE",
+        "SEND_RESET_PASSWORD",
+        "SEND_VERIFY_EMAIL",
+        "VERIFY_EMAIL",
+        "RESET_PASSWORD",
+        "IMPERSONATE",
+        "EXECUTE_ACTIONS"
+      ],
+      "adminEventsEnabled": true,
+      "adminEventsDetailsEnabled": true,
+      "internationalizationEnabled": false,
+      "supportedLocales": ["en"],
+      "defaultLocale": "en",
+      "authenticationFlows": [],
+      "authenticatorConfig": [],
+      "identityProviders": [],
+      "identityProviderMappers": [],
+      "protocolMappers": [],
+      "userManagedAccessAllowed": false
+    }

@@ -1,0 +1,52 @@
+---
+# Pod Security Admission — railos namespace (restricted profile)
+# Enforces Design §9.3 security context requirements across all RailOS pods.
+# Ref: https://kubernetes.io/docs/concepts/security/pod-security-admission/
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: railos
+  labels:
+    # Enforce: blocks non-compliant pods at admission
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    # Warn: emits warnings for non-compliant pods (doesn't block)
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: latest
+    # Audit: records policy violations in audit log
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: latest
+    app.kubernetes.io/part-of: railos-pilot
+
+---
+# railos-system namespace — privileged profile for infrastructure daemons
+# Used by: Falco (runtime security), linuxptp DaemonSets (NET_ADMIN required),
+#          node-level telemetry collectors.
+# Access to this namespace is restricted to Engineering_Team role.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: railos-system
+  labels:
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/warn: privileged
+    pod-security.kubernetes.io/warn-version: latest
+    pod-security.kubernetes.io/audit: baseline
+    pod-security.kubernetes.io/audit-version: latest
+    app.kubernetes.io/part-of: railos-pilot
+
+---
+# monitoring namespace — baseline profile for Prometheus, Grafana, Jaeger
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: railos-monitoring
+  labels:
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: latest
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: latest
+    app.kubernetes.io/part-of: railos-pilot

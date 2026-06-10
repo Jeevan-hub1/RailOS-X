@@ -1,0 +1,46 @@
+---
+# PodDisruptionBudget for Kafka brokers.
+#
+# Ensures that Kubernetes voluntary disruptions (node drains, rolling upgrades,
+# cluster autoscaler scale-down) never take down more than 1 broker at a time.
+#
+# With 3 brokers and min.insync.replicas=2:
+#   - 1 broker unavailable → cluster fully operational (2 ISRs remain)
+#   - 2 brokers unavailable → producers with acks=all will block (only 1 ISR)
+#   - 3 brokers unavailable → cluster unavailable
+#
+# maxUnavailable=1 prevents scenarios 2 and 3 during voluntary disruptions.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: kafka-pdb
+  namespace: railos
+  labels:
+    app: kafka
+    app.kubernetes.io/name: kafka
+    app.kubernetes.io/component: message-broker
+    app.kubernetes.io/part-of: railos-pilot
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: kafka
+
+---
+# PodDisruptionBudget for ZooKeeper (if using the plain StatefulSet approach).
+# ZooKeeper quorum requires at least 2 of 3 nodes; maxUnavailable=1 enforces this.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: zookeeper-pdb
+  namespace: railos
+  labels:
+    app: zookeeper
+    app.kubernetes.io/name: zookeeper
+    app.kubernetes.io/component: coordination
+    app.kubernetes.io/part-of: railos-pilot
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: zookeeper

@@ -1,0 +1,70 @@
+---
+# ServiceAccount for Patroni pods
+#
+# Patroni uses the Kubernetes API (DCS) to manage leader election.
+# It requires permissions to get/create/update Endpoints and ConfigMaps
+# within the railos namespace, plus the ability to read its own Pod metadata.
+#
+# Satisfies:
+#   - Design §9.3: non-root pod security, least-privilege RBAC
+#   - Requirement 15/16: Patroni DCS requires kube API access for failover
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: patroni
+  namespace: railos
+  labels:
+    app: postgresql-patroni
+    app.kubernetes.io/name: postgresql-patroni
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: railos-pilot
+
+---
+# Role: minimal permissions required by Patroni Kubernetes DCS
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: patroni
+  namespace: railos
+  labels:
+    app: postgresql-patroni
+    app.kubernetes.io/part-of: railos-pilot
+rules:
+  # Patroni stores cluster state as ConfigMaps and leader as Endpoints
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["create", "get", "list", "patch", "update", "watch", "delete"]
+  - apiGroups: [""]
+    resources: ["endpoints"]
+    verbs: ["create", "get", "list", "patch", "update", "watch", "delete"]
+  # Patroni reads pod information to determine its own role and peers
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  # Patroni patches pod labels to advertise master/replica role
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["patch"]
+  # Patroni reads services to find the bootstrap cluster endpoint
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "watch"]
+
+---
+# RoleBinding: bind Patroni role to the patroni ServiceAccount
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: patroni
+  namespace: railos
+  labels:
+    app: postgresql-patroni
+    app.kubernetes.io/part-of: railos-pilot
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: patroni
+subjects:
+  - kind: ServiceAccount
+    name: patroni
+    namespace: railos

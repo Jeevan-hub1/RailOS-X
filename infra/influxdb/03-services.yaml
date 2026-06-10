@@ -1,0 +1,127 @@
+---
+# InfluxDB Services
+#
+# Four services are defined:
+#   1. influxdb-primary        — ClusterIP for HTTP API writes/reads to primary
+#   2. influxdb-primary-headless — Headless for StatefulSet pod DNS (WAL replication)
+#   3. influxdb-standby        — ClusterIP for read-only access to standby (read scaling)
+#   4. influxdb-standby-headless — Headless for StatefulSet pod DNS (WAL apply side)
+#
+# Satisfies:
+#   - Requirement 1 C4:  Write path to primary for Data_Pipeline Flink writer
+#   - Requirement 8 C1:  Read path for Digital Twin state store queries
+#   - Requirement 15/16: Standby readable for RTO <5 min (failover: update app config
+#                        to point at standby ClusterIP or use DNS alias)
+#   - Design §10.1:      Primary + hot standby topology
+
+# ─── Primary: Headless (for StatefulSet DNS and WAL streaming) ─────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: influxdb-primary-headless
+  namespace: railos
+  labels:
+    app: influxdb-primary
+    app.kubernetes.io/name: influxdb
+    app.kubernetes.io/component: time-series-primary
+    app.kubernetes.io/part-of: railos-pilot
+spec:
+  clusterIP: None           # Headless — no virtual IP, DNS returns pod IPs directly
+  publishNotReadyAddresses: false
+  selector:
+    app: influxdb-primary
+  ports:
+    - name: http-api
+      port: 8086
+      targetPort: http-api
+      protocol: TCP
+    - name: wal-stream
+      port: 8088
+      targetPort: wal-stream
+      protocol: TCP
+
+---
+# ─── Primary: ClusterIP (for application writes and reads) ────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: influxdb-primary
+  namespace: railos
+  labels:
+    app: influxdb-primary
+    app.kubernetes.io/name: influxdb
+    app.kubernetes.io/component: time-series-primary
+    app.kubernetes.io/part-of: railos-pilot
+  annotations:
+    # Document the internal DNS name for application teams
+    service.alpha.kubernetes.io/internal-dns: "influxdb-primary.railos.svc.cluster.local"
+spec:
+  type: ClusterIP
+  selector:
+    app: influxdb-primary
+  ports:
+    - name: http-api
+      port: 8086
+      targetPort: http-api
+      protocol: TCP
+    - name: wal-stream
+      port: 8088
+      targetPort: wal-stream
+      protocol: TCP
+
+---
+# ─── Standby: Headless (for StatefulSet DNS, WAL apply listener) ──────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: influxdb-standby-headless
+  namespace: railos
+  labels:
+    app: influxdb-standby
+    app.kubernetes.io/name: influxdb
+    app.kubernetes.io/component: time-series-standby
+    app.kubernetes.io/part-of: railos-pilot
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: false
+  selector:
+    app: influxdb-standby
+  ports:
+    - name: http-api
+      port: 8086
+      targetPort: http-api
+      protocol: TCP
+    - name: wal-stream
+      port: 8088
+      targetPort: wal-stream
+      protocol: TCP
+
+---
+# ─── Standby: ClusterIP (for read-only queries during normal ops and failover) ─
+apiVersion: v1
+kind: Service
+metadata:
+  name: influxdb-standby
+  namespace: railos
+  labels:
+    app: influxdb-standby
+    app.kubernetes.io/name: influxdb
+    app.kubernetes.io/component: time-series-standby
+    app.kubernetes.io/part-of: railos-pilot
+  annotations:
+    service.alpha.kubernetes.io/internal-dns: "influxdb-standby.railos.svc.cluster.local"
+    # During failover, update the 'influxdb-write' alias (or patch application
+    # INFLUXDB_URL env var) to point here. RTO target: <5 min (Req 15/16).
+spec:
+  type: ClusterIP
+  selector:
+    app: influxdb-standby
+  ports:
+    - name: http-api
+      port: 8086
+      targetPort: http-api
+      protocol: TCP
+    - name: wal-stream
+      port: 8088
+      targetPort: wal-stream
+      protocol: TCP

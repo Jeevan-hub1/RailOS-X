@@ -1,0 +1,239 @@
+---
+# HashiCorp Vault — Initialization Job
+#
+# This Job runs once after the Vault StatefulSet is deployed.  It:
+#   1. Waits for Vault to be ready (HTTP 200/429/501/503 from /v1/sys/health)
+#   2. Initializes Vault if not already initialized (vault operator init)
+#   3. Unseals Vault using the unseal key from the vault-bootstrap Secret
+#   4. Authenticates with the root token
+#   5. Enables the KV-v2 secrets engine at secret/
+#   6. Enables the file audit device at /vault/audit/audit.log (immutable logging)
+#   7. Creates initial RailOS secret paths with placeholder values:
+#        secret/railos/thresholds  — ML model inference thresholds
+#        secret/railos/suppression — Alert suppression window configuration
+#        secret/railos/drift       — PSI drift detection configuration
+#        secret/railos/deployment  — Deployment parameters (replica counts, image tags)
+#
+# Idempotent: all steps check whether they are already complete before running.
+# Re-running this Job after successful init is safe (vault CLI returns non-fatal errors).
+#
+# Satisfies:
+#   - Req 37:     KV-v2 secrets engine at secret/railos/* for all RailOS config
+#   - Task 21.4:  File audit device enabled for immutable configuration change logging
+#   - Design §10.4: Vault-stored retention policy values
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: vault-init
+  namespace: railos
+  labels:
+    app.kubernetes.io/name: vault
+    app.kubernetes.io/component: init-job
+    app.kubernetes.io/part-of: railos-pilot
+  annotations:
+    # Mark as a one-time init job — do not auto-restart on completion
+    helm.sh/hook: post-install
+    helm.sh/hook-weight: "10"
+spec:
+  backoffLimit: 5
+  activeDeadlineSeconds: 600     # 10 minutes maximum
+  ttlSecondsAfterFinished: 86400  # Clean up after 24 hours
+
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: vault
+        app.kubernetes.io/component: init-job
+        app.kubernetes.io/part-of: railos-pilot
+    spec:
+      restartPolicy: OnFailure
+
+      # ─── Security Context ────────────────────────────────────────────────────
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+
+      serviceAccountName: vault
+
+      containers:
+        - name: vault-init
+          image: hashicorp/vault:1.16
+          imagePullPolicy: IfNotPresent
+
+          env:
+            - name: VAULT_ADDR
+              value: "http://vault.railos.svc.cluster.local:8200"
+            - name: VAULT_SKIP_VERIFY
+              value: "true"
+            # Root token from bootstrap Secret (revoke after init)
+            - name: VAULT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: vault-bootstrap
+                  key: VAULT_DEV_ROOT_TOKEN_ID
+            # Unseal key from bootstrap Secret
+            - name: VAULT_UNSEAL_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: vault-bootstrap
+                  key: VAULT_UNSEAL_KEY
+
+          command:
+            - sh
+            - -c
+            - |
+              set -e
+
+              echo "=== Vault Init Job starting ==="
+              echo "Vault address: ${VAULT_ADDR}"
+
+              # ── Step 1: Wait for Vault to respond ──────────────────────────
+              echo "Waiting for Vault API to be reachable..."
+              until vault status -format=json 2>/dev/null | grep -q '"initialized"'; do
+                echo "  Vault not yet ready — retrying in 5s..."
+                sleep 5
+              done
+              echo "Vault API is reachable."
+
+              # ── Step 2: Initialize Vault if needed ─────────────────────────
+              INIT_STATUS=$(vault status -format=json 2>/dev/null | python3 -c \
+                "import sys,json; d=json.load(sys.stdin); print(d.get('initialized','false'))")
+
+              if [ "${INIT_STATUS}" = "false" ]; then
+                echo "Initializing Vault (1 key share, 1 key threshold for dev)..."
+                vault operator init \
+                  -key-shares=1 \
+                  -key-threshold=1 \
+                  -format=json > /tmp/vault-init-output.json
+                echo "Vault initialized. IMPORTANT: Store init output securely and delete this Job."
+                cat /tmp/vault-init-output.json
+              else
+                echo "Vault is already initialized — skipping init."
+              fi
+
+              # ── Step 3: Unseal Vault ───────────────────────────────────────
+              SEALED=$(vault status -format=json 2>/dev/null | python3 -c \
+                "import sys,json; d=json.load(sys.stdin); print(d.get('sealed','true'))")
+
+              if [ "${SEALED}" = "true" ]; then
+                echo "Unsealing Vault..."
+                vault operator unseal "${VAULT_UNSEAL_KEY}"
+                echo "Vault unsealed."
+              else
+                echo "Vault is already unsealed — skipping unseal."
+              fi
+
+              # ── Step 4: Wait for active state ─────────────────────────────
+              echo "Waiting for Vault to become active..."
+              until vault status -format=json 2>/dev/null | python3 -c \
+                "import sys,json; d=json.load(sys.stdin); exit(0 if not d.get('sealed',True) else 1)"; do
+                echo "  Vault not yet active — retrying in 3s..."
+                sleep 3
+              done
+              echo "Vault is active."
+
+              # ── Step 5: Enable KV-v2 secrets engine at secret/ ────────────
+              echo "Enabling KV-v2 secrets engine at secret/..."
+              if vault secrets list -format=json 2>/dev/null | python3 -c \
+                "import sys,json; d=json.load(sys.stdin); exit(0 if 'secret/' in d else 1)"; then
+                echo "KV-v2 secrets engine already enabled at secret/ — skipping."
+              else
+                vault secrets enable -path=secret kv-v2
+                echo "KV-v2 secrets engine enabled at secret/."
+              fi
+
+              # ── Step 6: Enable file audit device ──────────────────────────
+              # The file audit device logs all requests/responses to an append-only
+              # file, providing immutable configuration change history (Task 21.4).
+              echo "Enabling file audit device..."
+              if vault audit list -format=json 2>/dev/null | python3 -c \
+                "import sys,json; d=json.load(sys.stdin); exit(0 if 'file/' in d else 1)"; then
+                echo "File audit device already enabled — skipping."
+              else
+                vault audit enable file \
+                  file_path=/vault/audit/audit.log \
+                  log_raw=false \
+                  hmac_accessor=true
+                echo "File audit device enabled at /vault/audit/audit.log."
+              fi
+
+              # ── Step 7: Create initial RailOS secret paths ─────────────────
+              # Each path is created with a 'bootstrap' key to initialize the path.
+              # Actual values are populated by the relevant RailOS service operators
+              # or by Terraform/Ansible configuration management.
+
+              echo "Creating secret/railos/thresholds ..."
+              vault kv put secret/railos/thresholds \
+                bootstrap="true" \
+                defect_detector_confidence_threshold="0.70" \
+                maintenance_failure_probability_threshold="0.80" \
+                security_anomaly_reconstruction_error_threshold="REPLACE_WITH_THRESHOLD" \
+                delay_predictor_stale_input_seconds="60"
+
+              echo "Creating secret/railos/suppression ..."
+              vault kv put secret/railos/suppression \
+                bootstrap="true" \
+                defect_alert_suppression_window_seconds="300" \
+                maintenance_advisory_suppression_window_seconds="3600" \
+                security_anomaly_suppression_window_seconds="0" \
+                human_review_escalation_timeout_seconds="14400" \
+                security_escalation_timeout_seconds="900"
+
+              echo "Creating secret/railos/drift ..."
+              vault kv put secret/railos/drift \
+                bootstrap="true" \
+                psi_drift_warning_threshold="0.1" \
+                psi_drift_critical_threshold="0.2" \
+                defect_detector_drift_check_enabled="true" \
+                maintenance_engine_drift_check_enabled="true" \
+                delay_predictor_drift_check_enabled="true" \
+                drift_check_interval_seconds="3600"
+
+              echo "Creating secret/railos/deployment ..."
+              vault kv put secret/railos/deployment \
+                bootstrap="true" \
+                flink_taskmanager_replicas="3" \
+                marl_scheduler_replicas="1" \
+                defect_detector_replicas="2" \
+                maintenance_engine_replicas="2" \
+                delay_predictor_replicas="2" \
+                model_rollback_timeout_seconds="900" \
+                federated_learning_round_timeout_seconds="120" \
+                federated_learning_min_clients="3"
+
+              echo "Creating secret/railos/retention ..."
+              vault kv put secret/railos/retention \
+                bootstrap="true" \
+                raw_sensor_events_ttl_days="90" \
+                inference_audit_logs_ttl_days="365" \
+                security_anomaly_records_ttl_days="365" \
+                forensic_evidence_ttl_days="365" \
+                model_audit_logs_ttl_days="365" \
+                authorization_events_ttl_days="365"
+
+              echo ""
+              echo "=== Vault Init Job completed successfully ==="
+              echo ""
+              echo "IMPORTANT POST-INIT ACTIONS:"
+              echo "  1. Revoke the root token: vault token revoke \${VAULT_TOKEN}"
+              echo "  2. Store the unseal key securely offline (or configure auto-unseal)"
+              echo "  3. Delete the vault-bootstrap Secret from Kubernetes"
+              echo "  4. Configure Vault Kubernetes auth method for service-to-service access"
+              echo "  5. Update all REPLACE_WITH_* placeholder values in Vault secrets"
+
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: false  # vault CLI writes to /tmp
+            runAsNonRoot: true
+            runAsUser: 1000

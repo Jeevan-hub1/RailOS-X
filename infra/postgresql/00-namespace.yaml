@@ -1,0 +1,12 @@
+---
+# Namespace is already declared in the Kafka namespace.yaml.
+# This file is a no-op reference; apply infra/kafka/namespace.yaml first.
+# Kept here for documentation purposes only.
+#
+# kubectl apply -f infra/kafka/namespace.yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: railos
+  labels:
+    app.kubernetes.io/part-of: railos-pilot

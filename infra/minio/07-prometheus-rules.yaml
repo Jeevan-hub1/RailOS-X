@@ -1,0 +1,182 @@
+---
+# MinIO Prometheus Alerting Rules
+#
+# Requires Prometheus Operator (PrometheusRule CRD).
+# If not using the Operator, copy the `groups:` block into your Prometheus
+# configuration file manually.
+#
+# MinIO exposes its built-in metrics at:
+#   http://minio.railos.svc.cluster.local:9000/minio/v2/metrics/cluster
+# (requires Bearer token from minio-auth Secret when auth type is "jwt")
+#
+# Key metrics scraped:
+#   minio_cluster_capacity_raw_total_bytes    — raw cluster capacity
+#   minio_cluster_capacity_usable_total_bytes — usable capacity after erasure overhead
+#   minio_cluster_capacity_usable_free_bytes  — remaining usable space
+#   minio_node_drive_state                    — per-drive health (1 = healthy, 0 = offline)
+#   minio_cluster_nodes_online_total          — number of online MinIO nodes
+#   minio_cluster_nodes_offline_total         — number of offline nodes
+#   minio_bucket_usage_total_bytes            — per-bucket object storage consumption
+#
+# Satisfies:
+#   - Req 17:       Prometheus metrics for infrastructure components
+#   - Req 15/16:    Availability alerting for object store
+#   - Design §9.5:  Forensic evidence bucket integrity monitoring
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: minio-alerts
+  namespace: railos
+  labels:
+    app.kubernetes.io/name: minio
+    app.kubernetes.io/component: monitoring
+    app.kubernetes.io/part-of: railos-pilot
+    # Label required by Prometheus Operator to pick up this rule
+    prometheus: kube-prometheus
+    role: alert-rules
+spec:
+  groups:
+    # ─── MinIO Cluster Availability ─────────────────────────────────────────
+    - name: minio.availability
+      interval: 30s
+      rules:
+        # Fire when fewer than 3 of 4 MinIO nodes are online.
+        # With EC:2, losing 2 nodes stops writes; losing 3 stops reads.
+        - alert: MinIOClusterNodeOffline
+          expr: |
+            minio_cluster_nodes_offline_total{job="minio-job"} >= 2
+          for: 2m
+          labels:
+            severity: critical
+            component: minio
+            team: railos-infra
+          annotations:
+            summary: "MinIO cluster has {{ $value }} offline node(s)"
+            description: >
+              MinIO cluster 'railos-pilot-minio' has {{ $value }} offline node(s).
+              With EC:2, the cluster cannot accept writes if ≥2 nodes are offline.
+              Check pod status: kubectl get pods -n railos -l app=minio
+
+        - alert: MinIOClusterSingleNodeOffline
+          expr: |
+            minio_cluster_nodes_offline_total{job="minio-job"} == 1
+          for: 5m
+          labels:
+            severity: warning
+            component: minio
+            team: railos-infra
+          annotations:
+            summary: "MinIO cluster has 1 offline node"
+            description: >
+              MinIO cluster has 1 offline node. Cluster remains available with EC:2
+              but is not fault-tolerant.  Investigate immediately.
+              Check: kubectl describe pods -n railos -l app=minio
+
+    # ─── Drive Health ────────────────────────────────────────────────────────
+    - name: minio.drives
+      interval: 30s
+      rules:
+        - alert: MinIODriveOffline
+          expr: |
+            minio_node_drive_state{job="minio-job", state="offline"} > 0
+          for: 2m
+          labels:
+            severity: warning
+            component: minio
+            team: railos-infra
+          annotations:
+            summary: "MinIO drive offline on node {{ $labels.server }}"
+            description: >
+              A MinIO data drive on node {{ $labels.server }} / drive {{ $labels.drive }}
+              is offline.  This reduces erasure coding redundancy.
+              Check PVC status: kubectl get pvc -n railos -l app=minio
+
+    # ─── Capacity ────────────────────────────────────────────────────────────
+    - name: minio.capacity
+      interval: 60s
+      rules:
+        - alert: MinIOClusterLowFreeSpace
+          expr: |
+            (
+              minio_cluster_capacity_usable_free_bytes{job="minio-job"}
+              /
+              minio_cluster_capacity_usable_total_bytes{job="minio-job"}
+            ) < 0.20
+          for: 10m
+          labels:
+            severity: warning
+            component: minio
+            team: railos-infra
+          annotations:
+            summary: "MinIO usable free space below 20%"
+            description: >
+              MinIO cluster usable free space has dropped below 20%.
+              Used: {{ humanize (
+                minio_cluster_capacity_usable_total_bytes{job="minio-job"}
+                - minio_cluster_capacity_usable_free_bytes{job="minio-job"}) }}.
+              Total: {{ humanize minio_cluster_capacity_usable_total_bytes{job="minio-job"} }}.
+              Consider expanding storage or running Delta Lake compaction (Task 4.9).
+
+        - alert: MinIOClusterCriticalFreeSpace
+          expr: |
+            (
+              minio_cluster_capacity_usable_free_bytes{job="minio-job"}
+              /
+              minio_cluster_capacity_usable_total_bytes{job="minio-job"}
+            ) < 0.10
+          for: 5m
+          labels:
+            severity: critical
+            component: minio
+            team: railos-infra
+          annotations:
+            summary: "MinIO usable free space critically low (<10%)"
+            description: >
+              MinIO cluster usable free space is critically low (<10%).
+              Delta Lake writes and forensic evidence archival may fail imminently.
+              Immediate action required: expand PVCs or delete non-critical data.
+
+    # ─── Forensic Bucket Integrity ───────────────────────────────────────────
+    # Alert if the forensic evidence bucket becomes empty unexpectedly.
+    # A zero-object count after prior non-zero activity signals a potential
+    # Object Lock bypass or unintended deletion (should be impossible in COMPLIANCE
+    # mode, but worth monitoring for audit purposes).
+    - name: minio.forensic
+      interval: 300s    # 5-minute check interval; forensic writes are low-frequency
+      rules:
+        - alert: MinIOForensicBucketUnexpectedEmpty
+          expr: |
+            minio_bucket_usage_object_total{
+              job="minio-job",
+              bucket="railos-forensic-evidence"
+            } == 0
+          for: 60m
+          labels:
+            severity: warning
+            component: minio
+            team: railos-security
+          annotations:
+            summary: "railos-forensic-evidence bucket has been empty for 60 minutes"
+            description: >
+              The railos-forensic-evidence bucket reports zero objects for 60 minutes.
+              If SECURITY_ANOMALY events have been emitted in this period, verify that
+              the forensic archival pipeline is functioning.  (Req 26, Design §9.5)
+
+    # ─── Prometheus Scrape Health ────────────────────────────────────────────
+    - name: minio.scrape
+      interval: 60s
+      rules:
+        - alert: MinIOMetricsEndpointDown
+          expr: |
+            up{job="minio-job"} == 0
+          for: 5m
+          labels:
+            severity: warning
+            component: minio
+            team: railos-infra
+          annotations:
+            summary: "MinIO Prometheus metrics endpoint is not reachable"
+            description: >
+              Prometheus cannot scrape the MinIO metrics endpoint.
+              Verify minio service and MINIO_PROMETHEUS_AUTH_TOKEN.
+              kubectl get svc minio -n railos

@@ -1,0 +1,358 @@
+---
+# PostgreSQL + Patroni HA StatefulSet — 3 nodes (1 primary + 2 replicas)
+#
+# Architecture:
+#   - Node 0 bootstraps the cluster (becomes primary on first run).
+#   - Nodes 1 and 2 join as streaming replicas via Patroni clone.
+#   - On primary failure, Patroni auto-elects a new leader within 30–60s
+#     (RTO < 2 min, RPO ≤ 60s per Design §10.1 and Req 15/16).
+#
+# Containers per pod:
+#   1. postgresql-patroni  — PostgreSQL 16 managed by Patroni
+#   2. postgres-exporter   — prometheus/postgres_exporter sidecar (Req 17)
+#
+# Security (Design §9.3):
+#   - Non-root user (UID 999 = postgres)
+#   - allowPrivilegeEscalation: false
+#   - capabilities dropped to ALL
+#
+# Anti-affinity (Design §10.1):
+#   - Required: one pod per Kubernetes node (node failure ≠ quorum loss)
+#
+# Satisfies:
+#   - Requirement 9  C7:  PostgreSQL stores append-only audit log
+#   - Requirement 11 C5:  Model audit log, 365-day retention
+#   - Requirement 12 C4:  Authorization audit log, append-only
+#   - Requirement 15:     HA configuration matching §10.1 table
+#   - Requirement 16:     RPO ≤ 60s, RTO < 2 min; WAL streaming replication
+#   - Design §10.1:       Patroni HA (primary + 2 replicas)
+#   - Design §9.5:        PostgreSQL security_audit is append-only
+
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgresql-patroni
+  namespace: railos
+  labels:
+    app: postgresql-patroni
+    app.kubernetes.io/name: postgresql-patroni
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: railos-pilot
+    app.kubernetes.io/version: "16.3"
+spec:
+  serviceName: postgresql-headless
+  replicas: 3                       # 1 primary + 2 replicas
+  updateStrategy:
+    type: RollingUpdate             # Roll one pod at a time
+  podManagementPolicy: OrderedReady # Node 0 must be ready before 1 and 2 join
+  selector:
+    matchLabels:
+      app: postgresql-patroni
+
+  template:
+    metadata:
+      labels:
+        app: postgresql-patroni
+        app.kubernetes.io/name: postgresql-patroni
+        app.kubernetes.io/part-of: railos-pilot
+        # 'role' label is managed dynamically by Patroni:
+        #   master   → selected by postgresql-primary service
+        #   replica  → selected by postgresql-replicas service
+        # Initial value; Patroni will override at runtime.
+        role: replica
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9187"
+        prometheus.io/path: "/metrics"
+
+    spec:
+      # ─── ServiceAccount ──────────────────────────────────────────────────
+      serviceAccountName: patroni
+
+      # ─── Security Context ─────────────────────────────────────────────────
+      # postgres UID=999, GID=999 in the official postgres Docker image
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+
+      # ─── Anti-Affinity ────────────────────────────────────────────────────
+      # Required: one PostgreSQL pod per Kubernetes node.
+      # This ensures a single node failure does not eliminate quorum.
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchExpressions:
+                  - key: app
+                    operator: In
+                    values:
+                      - postgresql-patroni
+              topologyKey: kubernetes.io/hostname
+
+      terminationGracePeriodSeconds: 60
+
+      # ─── Init Container ───────────────────────────────────────────────────
+      # Substitutes environment variables into the Patroni config template
+      # and places the rendered patroni.yaml in the shared config volume.
+      initContainers:
+        - name: patroni-config-init
+          image: bitnami/envsubst:latest
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              set -euo pipefail
+              mkdir -p /etc/patroni-out
+              # Substitute env vars from template → rendered config
+              envsubst < /etc/patroni-tmpl/patroni.yaml.tmpl > /etc/patroni-out/patroni.yaml
+              # Copy helper scripts
+              cp /etc/patroni-tmpl/entrypoint.sh /etc/patroni-out/entrypoint.sh
+              cp /etc/patroni-tmpl/init-db.sh    /etc/patroni-out/init-db.sh
+              chmod +x /etc/patroni-out/entrypoint.sh /etc/patroni-out/init-db.sh
+              echo "Patroni config rendered for pod: ${POD_NAME}"
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: POSTGRES_SUPERUSER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgresql-patroni-secrets
+                  key: superuser-password
+            - name: POSTGRES_REPLICATION_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgresql-patroni-secrets
+                  key: replication-password
+            - name: PATRONI_API_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgresql-patroni-secrets
+                  key: patroni-api-password
+            - name: POSTGRES_APP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgresql-patroni-secrets
+                  key: app-password
+          volumeMounts:
+            - name: patroni-config-tmpl
+              mountPath: /etc/patroni-tmpl
+              readOnly: true
+            - name: patroni-config-rendered
+              mountPath: /etc/patroni-out
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+
+      # ─── Containers ───────────────────────────────────────────────────────
+      containers:
+
+        # ── 1. PostgreSQL + Patroni ──────────────────────────────────────────
+        - name: postgresql-patroni
+          image: patroni/patroni:3.3.0
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/bash
+            - /etc/patroni/entrypoint.sh
+          ports:
+            - name: postgresql
+              containerPort: 5432
+              protocol: TCP
+            - name: patroni-api
+              containerPort: 8008
+              protocol: TCP
+
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: POSTGRES_SUPERUSER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgresql-patroni-secrets
+                  key: superuser-password
+            - name: POSTGRES_REPLICATION_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgresql-patroni-secrets
+                  key: replication-password
+            - name: PATRONI_API_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgresql-patroni-secrets
+                  key: patroni-api-password
+            - name: POSTGRES_APP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgresql-patroni-secrets
+                  key: app-password
+            - name: PATRONI_KUBERNETES_POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: PATRONI_KUBERNETES_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: PATRONI_SCOPE
+              value: railos-postgres
+            # Tell Patroni to use Kubernetes DCS
+            - name: PATRONI_KUBERNETES_LABELS
+              value: '{"app": "postgresql-patroni"}'
+
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              cpu: "2000m"
+              memory: "4Gi"
+
+          # ── Probes ──────────────────────────────────────────────────────────
+          # Use Patroni REST API for all probes; it knows the node's actual role.
+          readinessProbe:
+            httpGet:
+              path: /health          # returns 200 for master, 503 for replica not caught up
+              port: patroni-api
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /liveness        # returns 200 while Patroni is running
+              port: patroni-api
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 5
+          startupProbe:
+            httpGet:
+              path: /liveness
+              port: patroni-api
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 30     # allow up to 5 minutes for cold start + clone
+
+          volumeMounts:
+            - name: postgresql-data
+              mountPath: /var/lib/postgresql/data
+            - name: patroni-config-rendered
+              mountPath: /etc/patroni
+              readOnly: false         # entrypoint writes pgpass here
+            - name: postgresql-init-sql
+              mountPath: /etc/patroni-sql
+              readOnly: true
+            - name: tmp-dir
+              mountPath: /tmp
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+
+        # ── 2. postgres_exporter sidecar (Prometheus metrics) ────────────────
+        # Exposes PostgreSQL metrics on :9187/metrics.
+        # Satisfies Req 17 (observability stack) and Design §8 (Prometheus scraping).
+        - name: postgres-exporter
+          image: prometheuscommunity/postgres-exporter:v0.15.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: pg-exporter
+              containerPort: 9187
+              protocol: TCP
+          env:
+            - name: DATA_SOURCE_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-exporter-secret
+                  key: data-source-name
+            # Collect metrics from all configured databases
+            - name: PG_EXPORTER_AUTO_DISCOVER_DATABASES
+              value: "true"
+            # Disable TLS for in-cluster (pod-local) connection
+            - name: PG_EXPORTER_DISABLE_SETTINGS_METRICS
+              value: "false"
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "200m"
+              memory: "256Mi"
+          readinessProbe:
+            httpGet:
+              path: /metrics
+              port: pg-exporter
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /metrics
+              port: pg-exporter
+            initialDelaySeconds: 20
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            runAsNonRoot: true
+            runAsUser: 65534    # nobody
+
+      # ─── Volumes ──────────────────────────────────────────────────────────
+      volumes:
+        - name: patroni-config-tmpl
+          configMap:
+            name: patroni-config
+            items:
+              - key: patroni.yaml.tmpl
+                path: patroni.yaml.tmpl
+              - key: entrypoint.sh
+                path: entrypoint.sh
+              - key: init-db.sh
+                path: init-db.sh
+        - name: patroni-config-rendered
+          emptyDir: {}    # init container writes here, main container reads
+        - name: postgresql-init-sql
+          configMap:
+            name: postgresql-init-sql
+        - name: tmp-dir
+          emptyDir: {}
+
+  # ─── VolumeClaimTemplates ──────────────────────────────────────────────────
+  # Each node gets a dedicated 100 Gi PVC for PostgreSQL data.
+  # PVCs survive pod restarts; data is retained across rolling updates.
+  volumeClaimTemplates:
+    - metadata:
+        name: postgresql-data
+        labels:
+          app: postgresql-patroni
+          app.kubernetes.io/part-of: railos-pilot
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        # Replace 'standard' with your cluster's SSD-backed storage class.
+        # Recommended: gp3 (AWS EKS), premium-rwo (GKE), managed-premium (AKS)
+        storageClassName: standard
+        resources:
+          requests:
+            storage: 100Gi

@@ -1,0 +1,326 @@
+---
+# InfluxDB 3.0 — Hot Standby StatefulSet
+#
+# Satisfies:
+#   - Requirement 15/16:  Hot standby for RPO ≤60s and RTO <5 min
+#   - Design §10.1:       Primary + hot standby, continuous WAL replication
+#
+# Architecture notes:
+#   - Single-pod StatefulSet, always running (hot standby — not cold spare)
+#   - The 'wal-receiver' sidecar listens on port 8088 for WAL segments streamed
+#     from the primary's wal-streamer sidecar
+#   - WAL segments are written to the standby's shared PVC and applied by
+#     the apply-wal init loop inside the wal-receiver
+#   - In normal operation, the standby HTTP API is available for read-only queries
+#     (offloads Digital Twin historical reads from the primary)
+#   - On failover: update INFLUXDB_URL in the Flink pipeline and Digital Twin
+#     services to point at 'influxdb-standby.railos.svc.cluster.local:8086'
+#     and annotate the standby pod to accept writes (see failover runbook in README)
+#
+# Replication lag:
+#   - The wal-receiver sidecar exposes influxdb_replication_lag_seconds on :9091/metrics
+#   - Combined with primary's :9090/metrics, the Prometheus alert rule in
+#     07-prometheus-rules.yaml fires if either side sees lag > 60s
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: influxdb-standby
+  namespace: railos
+  labels:
+    app: influxdb-standby
+    app.kubernetes.io/name: influxdb
+    app.kubernetes.io/component: time-series-standby
+    app.kubernetes.io/part-of: railos-pilot
+    app.kubernetes.io/version: "3.0.0"
+spec:
+  serviceName: influxdb-standby-headless
+  replicas: 1
+  updateStrategy:
+    type: RollingUpdate
+  podManagementPolicy: OrderedReady
+  selector:
+    matchLabels:
+      app: influxdb-standby
+
+  template:
+    metadata:
+      labels:
+        app: influxdb-standby
+        app.kubernetes.io/name: influxdb
+        app.kubernetes.io/component: time-series-standby
+        app.kubernetes.io/part-of: railos-pilot
+        influxdb-role: standby
+      annotations:
+        # Prometheus auto-discovery for InfluxDB native metrics (Req 17, Req 25)
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8086"
+        prometheus.io/path: "/metrics"
+        prometheus.io/scrape-extra-port: "9091"
+
+    spec:
+      # ─── Security Context ────────────────────────────────────────────────────
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+
+      # ─── Scheduling: keep standby on a different node from primary ───────────
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchExpressions:
+                  - key: app.kubernetes.io/name
+                    operator: In
+                    values:
+                      - influxdb
+              topologyKey: kubernetes.io/hostname
+
+      terminationGracePeriodSeconds: 60
+
+      # ─── Init Container: ensure data directories exist ────────────────────────
+      initContainers:
+        - name: influxdb-init-dirs
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              echo "Creating standby InfluxDB data directories..."
+              mkdir -p /var/lib/influxdb3/meta \
+                        /var/lib/influxdb3/data \
+                        /var/lib/influxdb3/wal \
+                        /var/lib/influxdb3/wal-incoming
+              chown -R 1000:1000 /var/lib/influxdb3
+              echo "Standby directories ready."
+          volumeMounts:
+            - name: influxdb-standby-data
+              mountPath: /var/lib/influxdb3
+          securityContext:
+            runAsUser: 0
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+              add: ["CHOWN", "DAC_OVERRIDE"]
+
+      containers:
+        # ─── Main InfluxDB 3.0 Container (standby mode) ─────────────────────────
+        - name: influxdb
+          image: influxdb:3.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http-api
+              containerPort: 8086
+              protocol: TCP
+            - name: wal-stream
+              containerPort: 8088
+              protocol: TCP
+
+          env:
+            # On standby, we do NOT set INIT_MODE=setup — the standby receives
+            # its data via WAL replay from the primary.
+            # If bootstrapping a fresh standby, set INIT_MODE=setup initially,
+            # then remove after the first WAL sync completes.
+            - name: DOCKER_INFLUXDB_INIT_MODE
+              value: "setup"
+            - name: DOCKER_INFLUXDB_INIT_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: influxdb-auth
+                  key: INFLUXDB_INIT_USERNAME
+            - name: DOCKER_INFLUXDB_INIT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: influxdb-auth
+                  key: INFLUXDB_INIT_PASSWORD
+            - name: DOCKER_INFLUXDB_INIT_ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: influxdb-auth
+                  key: INFLUXDB_INIT_ADMIN_TOKEN
+            - name: DOCKER_INFLUXDB_INIT_ORG
+              valueFrom:
+                secretKeyRef:
+                  name: influxdb-auth
+                  key: INFLUXDB_INIT_ORG
+            - name: DOCKER_INFLUXDB_INIT_BUCKET
+              valueFrom:
+                secretKeyRef:
+                  name: influxdb-auth
+                  key: INFLUXDB_INIT_BUCKET
+            - name: INFLUXD_CONFIG_PATH
+              value: "/etc/influxdb3/config.toml"
+            - name: INFLUXDB_REPLICATION_ROLE
+              value: "standby"
+            - name: INFLUXD_ENGINE_PATH
+              value: "/var/lib/influxdb3/data"
+            - name: INFLUXD_WAL_DIR
+              value: "/var/lib/influxdb3/wal"
+            - name: INFLUXD_META_DIR
+              value: "/var/lib/influxdb3/meta"
+
+          # ─── Resources ────────────────────────────────────────────────────────
+          # Standby needs similar resources to primary to apply WAL quickly
+          # and be ready to serve traffic on failover without scale-up delay.
+          resources:
+            requests:
+              cpu: "1000m"
+              memory: "4Gi"
+            limits:
+              cpu: "4000m"
+              memory: "8Gi"
+
+          # ─── Readiness Probe ──────────────────────────────────────────────────
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http-api
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+            successThreshold: 1
+
+          # ─── Liveness Probe ───────────────────────────────────────────────────
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http-api
+            initialDelaySeconds: 60
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 5
+
+          # ─── Startup Probe ────────────────────────────────────────────────────
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http-api
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 30    # 5 minutes maximum startup window
+
+          volumeMounts:
+            - name: influxdb-standby-data
+              mountPath: /var/lib/influxdb3
+            - name: influxdb-config
+              mountPath: /etc/influxdb3
+              readOnly: true
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: false
+            runAsNonRoot: true
+            runAsUser: 1000
+
+        # ─── WAL Receiver Sidecar ─────────────────────────────────────────────
+        # Listens on TCP port 8088 for WAL segments from the primary's wal-streamer.
+        # Writes received WAL segments to /var/lib/influxdb3/wal-incoming/ and
+        # signals InfluxDB to apply them.
+        # Exposes replication lag metrics on :9091/metrics for Prometheus.
+        - name: wal-receiver
+          image: railos/influxdb-wal-receiver:1.0.0
+          # NOTE: Build this image from infra/influxdb/wal-streamer/Dockerfile
+          # (the same image supports both streamer and receiver roles via ROLE env var)
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: wal-recv
+              containerPort: 8088
+              protocol: TCP
+            - name: metrics
+              containerPort: 9091
+              protocol: TCP
+
+          env:
+            - name: ROLE
+              value: "receiver"
+            - name: WAL_INCOMING_DIR
+              value: "/var/lib/influxdb3/wal-incoming"
+            - name: WAL_DIR
+              value: "/var/lib/influxdb3/wal"
+            - name: INFLUXDB_API_URL
+              value: "http://localhost:8086"
+            - name: INFLUXDB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: influxdb-auth
+                  key: INFLUXDB_INIT_ADMIN_TOKEN
+            - name: REPLICATION_LAG_THRESHOLD_SECONDS
+              value: "60"
+            - name: METRICS_PORT
+              value: "9091"
+            - name: REPLICATION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: influxdb-auth
+                  key: INFLUXDB_REPLICATION_SECRET
+
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: metrics
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+
+          livenessProbe:
+            httpGet:
+              path: /live
+              port: metrics
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 3
+            failureThreshold: 5
+
+          volumeMounts:
+            - name: influxdb-standby-data
+              mountPath: /var/lib/influxdb3
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: false   # Receiver writes to wal-incoming dir
+            runAsNonRoot: true
+            runAsUser: 1000
+
+      # ─── Volumes ─────────────────────────────────────────────────────────────
+      volumes:
+        - name: influxdb-config
+          configMap:
+            name: influxdb-config
+            items:
+              - key: config.toml
+                path: config.toml
+              - key: retention-policies.json
+                path: retention-policies.json
+
+  # ─── VolumeClaimTemplates ─────────────────────────────────────────────────────
+  # Standby PVC: same size as primary to hold a full copy of the dataset.
+  volumeClaimTemplates:
+    - metadata:
+        name: influxdb-standby-data
+        labels:
+          app: influxdb-standby
+          app.kubernetes.io/part-of: railos-pilot
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        storageClassName: standard
+        resources:
+          requests:
+            storage: 500Gi

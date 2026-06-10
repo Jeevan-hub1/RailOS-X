@@ -1,0 +1,41 @@
+---
+# PTP Boundary Clock — ptp4l configuration for Edge_Nodes
+# Acts as both a slave (to the grandmaster) and master (to Tier 1 sensors).
+# Satisfies Design §3.2: boundary clocks at each station Edge_Node.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ptp-boundary-config
+  namespace: railos-system
+  labels:
+    app.kubernetes.io/name: ptp-boundary
+    app.kubernetes.io/component: time-sync
+    app.kubernetes.io/part-of: railos-pilot
+data:
+  ptp4l.conf: |
+    [global]
+    # Boundary clock mode
+    clockClass               135
+    clockAccuracy            0xFE
+    offsetScaledLogVariance  0xFFFF
+    free_running             0
+    dataset_comparison       ieee1588
+    network_transport        UDPv4
+    delay_mechanism          E2E
+    time_stamping            software     # Edge_Nodes may not have hardware PHC
+    twoStepFlag              1
+    summary_interval         0
+    logging_level            6
+    use_syslog               0
+    message_tag              [BC]
+    domainNumber             0
+    priority1                128
+    priority2                128
+    slaveOnly                0
+    boundary_clock_jbod      0
+    # Interface facing grandmaster (upstream)
+    [eth0]
+    serverOnly               0
+    # Interface facing Tier 1 sensors (downstream)
+    [eth1]
+    serverOnly               1

@@ -1,0 +1,54 @@
+---
+# MinIO ConfigMap
+#
+# Tuning parameters for the MinIO cluster.  Environment variables that are not
+# secret are placed here so that they can be reviewed and adjusted without
+# touching the Secrets manifest.
+#
+# Satisfies:
+#   - Design §4.2:   S3-compatible object store for Delta Lake / Parquet
+#   - Design §9.5:   WORM / Object Lock on forensic bucket
+#   - Req 1 C4:      Archive destination after 90-day InfluxDB retention expires
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: minio-config
+  namespace: railos
+  labels:
+    app.kubernetes.io/name: minio
+    app.kubernetes.io/component: object-store
+    app.kubernetes.io/part-of: railos-pilot
+data:
+  # ─── Cluster Identity ────────────────────────────────────────────────────────
+  # Site name shown in MinIO Console and audit logs
+  MINIO_SITE_NAME: "railos-pilot-minio"
+
+  # ─── Erasure Coding ──────────────────────────────────────────────────────────
+  # 4-node distributed mode: EC:2 (2 parity drives out of 4).
+  # Object Lock / WORM requires distributed mode — single-node cannot use Object Lock.
+  # For single-node dev: see the single-node StatefulSet variant in the README.
+  MINIO_STORAGE_CLASS_STANDARD: "EC:2"
+  MINIO_STORAGE_CLASS_RRS: "EC:1"
+
+  # ─── Prometheus Metrics ───────────────────────────────────────────────────────
+  # MinIO exposes /minio/v2/metrics/cluster on port 9000.
+  # Auth type 'jwt' means the scrape endpoint requires the bearer token from Secret.
+  MINIO_PROMETHEUS_URL: "http://prometheus-operated.monitoring.svc.cluster.local:9090"
+  MINIO_PROMETHEUS_JOB_ID: "minio-job"
+  # MINIO_PROMETHEUS_AUTH_TYPE is set at runtime; "jwt" requires token from Secret.
+  # "public" removes auth on the metrics endpoint (acceptable in air-gapped envs).
+  MINIO_PROMETHEUS_AUTH_TYPE: "jwt"
+
+  # ─── Console ──────────────────────────────────────────────────────────────────
+  MINIO_BROWSER: "on"
+  MINIO_BROWSER_REDIRECT_URL: "https://minio-console.railos.example.com"
+
+  # ─── Logging ──────────────────────────────────────────────────────────────────
+  # Structured JSON audit log to stdout, consumed by the ELK stack.
+  MINIO_AUDIT_WEBHOOK_ENABLE: "off"   # Set to "on" + add endpoint to ship to ELK directly
+  MINIO_LOG_QUERY_ENABLE: "off"
+
+  # ─── Object Lock global default ───────────────────────────────────────────────
+  # Bucket-level Object Lock is configured by the bucket-init Job (06-bucket-init-job.yaml).
+  # COMPLIANCE mode: not even root can delete locked objects before retention expires.
+  MINIO_OBJECT_LOCK_DEFAULT_RETENTION_DAYS: "365"

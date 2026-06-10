@@ -1,0 +1,263 @@
+---
+# Keycloak 24 StatefulSet
+#
+# Single-replica deployment of Keycloak 24.0 (quay.io/keycloak/keycloak:24.0).
+# Uses PostgreSQL via the existing Patroni cluster (postgresql-primary service)
+# as the database backend — Keycloak's built-in H2 is NOT suitable for production.
+#
+# Key configuration:
+#   - Realm import on startup via --import-realm (KC_IMPORT mode)
+#   - RS256 signing keys generated from realm JSON (rsa-generated provider)
+#   - JWKS endpoint available at /realms/railos/protocol/openid-connect/certs
+#   - TOTP OTP policy enforced in imported realm (HmacSHA1, 6 digits, 30s)
+#   - Non-root security context (runAsUser: 1000) per Design §9.3 / Req 39
+#   - Connects to postgresql-primary.railos.svc.cluster.local:5432 (Patroni leader)
+#
+# StatefulSet (not Deployment) is used so that:
+#   - Keycloak gets a stable network identity for Infinispan clustering
+#   - PVC for /opt/keycloak/conf persistence if needed in future
+#
+# Satisfies:
+#   - Design §9.1:  Keycloak IdP with TOTP MFA and 4 RBAC roles
+#   - Design §9.2:  JWKS endpoint for Kong JWT RS256 validation
+#   - Design §9.3:  Non-root, no privilege escalation, drop ALL capabilities
+#   - Req 23/24:    Keycloak provides JWT tokens; Kong validates against JWKS
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: keycloak
+  namespace: railos
+  labels:
+    app: keycloak
+    app.kubernetes.io/name: keycloak
+    app.kubernetes.io/component: identity-provider
+    app.kubernetes.io/part-of: railos-pilot
+    app.kubernetes.io/version: "24.0"
+spec:
+  serviceName: keycloak-headless
+  replicas: 1
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app: keycloak
+
+  template:
+    metadata:
+      labels:
+        app: keycloak
+        app.kubernetes.io/name: keycloak
+        app.kubernetes.io/component: identity-provider
+        app.kubernetes.io/part-of: railos-pilot
+      annotations:
+        # Force pod restart when realm ConfigMap changes (checksum-based rolling update)
+        checksum/realm-config: "{{ include (print $.Template.BasePath \"/02-configmap.yaml\") . | sha256sum }}"
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9000"
+        prometheus.io/path: "/metrics"
+
+    spec:
+      # ─── Security Context ────────────────────────────────────────────────────
+      # Design §9.3 / Req 39: restricted Pod Security Admission profile
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+
+      terminationGracePeriodSeconds: 60
+
+      # ─── Init Container: wait for PostgreSQL ─────────────────────────────────
+      # Prevents Keycloak crash-looping if the Patroni primary isn't ready yet.
+      initContainers:
+        - name: wait-for-postgresql
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for PostgreSQL primary at postgresql-primary.railos.svc.cluster.local:5432..."
+              until nc -z postgresql-primary.railos.svc.cluster.local 5432; do
+                echo "PostgreSQL not ready — retrying in 5s..."
+                sleep 5
+              done
+              echo "PostgreSQL is ready."
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+
+      containers:
+        - name: keycloak
+          # Pin to exact digest in production; use tag for clarity here
+          image: quay.io/keycloak/keycloak:24.0
+          imagePullPolicy: IfNotPresent
+
+          # --optimized is omitted so Keycloak performs the build step on first start.
+          # In production, build a custom image with `kc.sh build` baked in and add
+          # --optimized to reduce startup time.
+          args:
+            - start
+            - --import-realm
+            - --hostname-strict=false
+            - --http-enabled=true
+            - --http-port=8080
+            - --health-enabled=true
+            - --metrics-enabled=true
+            - --cache=ispn
+            - --cache-stack=kubernetes
+            - --log-level=INFO
+
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+            - name: management
+              containerPort: 9000
+              protocol: TCP
+            - name: jgroups
+              containerPort: 7800
+              protocol: TCP
+
+          env:
+            # ── Bootstrap admin credentials ─────────────────────────────────
+            # KEYCLOAK_ADMIN / KEYCLOAK_ADMIN_PASSWORD are used only on first
+            # startup to create the master realm admin account.
+            - name: KEYCLOAK_ADMIN
+              valueFrom:
+                secretKeyRef:
+                  name: keycloak-admin-secret
+                  key: admin-user
+            - name: KEYCLOAK_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: keycloak-admin-secret
+                  key: admin-password
+
+            # ── Database connection (Patroni primary) ───────────────────────
+            - name: KC_DB
+              value: "postgres"
+            - name: KC_DB_URL
+              value: "jdbc:postgresql://postgresql-primary.railos.svc.cluster.local:5432/keycloak"
+            - name: KC_DB_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: keycloak-db-secret
+                  key: db-user
+            - name: KC_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: keycloak-db-secret
+                  key: db-password
+            - name: KC_DB_POOL_INITIAL_SIZE
+              value: "5"
+            - name: KC_DB_POOL_MIN_SIZE
+              value: "5"
+            - name: KC_DB_POOL_MAX_SIZE
+              value: "20"
+
+            # ── Realm import path ───────────────────────────────────────────
+            # Keycloak 24 scans this directory for *.json files on startup
+            # when --import-realm is passed. The ConfigMap is mounted here.
+            - name: KC_IMPORT
+              value: "/opt/keycloak/data/import"
+
+            # ── Cluster / caching ───────────────────────────────────────────
+            # DNS_PING: pods discover cluster members via headless service DNS.
+            # KUBERNETES_NAMESPACE + KUBERNETES_LABELS are used by JGroups
+            # KUBE_PING (alternative to DNS_PING for K8s deployments).
+            - name: JAVA_OPTS_APPEND
+              value: >-
+                -Djgroups.dns.query=keycloak-headless.railos.svc.cluster.local
+                -Djgroups.bind_addr=GLOBAL
+            - name: KC_CACHE_STACK
+              value: "kubernetes"
+
+            # ── Hostname / proxy config ─────────────────────────────────────
+            # Set KC_HOSTNAME to the external URL when deploying behind an
+            # ingress or load balancer (e.g., https://keycloak.railos.internal).
+            # Left blank here so the pod uses request-based hostname detection.
+            - name: KC_HOSTNAME
+              value: ""
+            - name: KC_PROXY
+              value: "edge"
+
+            # ── Logging ─────────────────────────────────────────────────────
+            - name: KC_LOG
+              value: "console"
+            - name: KC_LOG_CONSOLE_FORMAT
+              value: "%d{yyyy-MM-dd HH:mm:ss,SSS} %-5p [%c] (%t) %s%e%n"
+
+          # ─── Resources ─────────────────────────────────────────────────────
+          # Keycloak with PostgreSQL backend is CPU-bound during token issuance.
+          # Sized for light load (pilot system, not production scale).
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              cpu: "2000m"
+              memory: "1Gi"
+
+          # ─── Probes ─────────────────────────────────────────────────────────
+          # Keycloak 24 exposes /health/ready and /health/live on the management
+          # port (9000) when --health-enabled=true is set.
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: management
+            initialDelaySeconds: 60
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 5
+            successThreshold: 1
+
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: management
+            initialDelaySeconds: 90
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 5
+
+          startupProbe:
+            httpGet:
+              path: /health/started
+              port: management
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            # Allow up to 5 minutes for cold startup (realm import + DB init)
+            failureThreshold: 30
+
+          # ─── Volume mounts ───────────────────────────────────────────────────
+          volumeMounts:
+            # Realm import JSON from ConfigMap
+            - name: realm-import
+              mountPath: /opt/keycloak/data/import
+              readOnly: true
+            # Writable tmp dir required by Keycloak's Quarkus runtime
+            - name: keycloak-tmp
+              mountPath: /tmp
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false   # Quarkus writes to /opt/keycloak at runtime
+            runAsNonRoot: true
+            runAsUser: 1000
+            capabilities:
+              drop: ["ALL"]
+
+      volumes:
+        - name: realm-import
+          configMap:
+            name: keycloak-realm-config
+            items:
+              - key: railos-realm.json
+                path: railos-realm.json
+        - name: keycloak-tmp
+          emptyDir: {}

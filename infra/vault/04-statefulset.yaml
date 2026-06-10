@@ -1,0 +1,246 @@
+---
+# HashiCorp Vault 1.16 — StatefulSet
+#
+# Deploys a single Vault instance (1 replica) with:
+#   - 10 Gi PVC split across data (/vault/data) and audit log (/vault/audit)
+#     mounted from the same PVC for simplicity; in production use separate PVCs
+#     so the audit log PVC can have immutable/WORM storage policy
+#   - Non-root security context (UID 100, GID 1000 — vault default user)
+#   - File storage backend (configured in vault.hcl ConfigMap)
+#
+# The audit log at /vault/audit/audit.log records every Vault request/response
+# and is enabled by the init Job (05-init-job.yaml).
+#
+# Satisfies:
+#   - Req 37:     Vault stores all RailOS operational thresholds and config
+#   - Task 21.4:  Immutable audit device for configuration change logging
+#   - Req 39:     Non-root, no privilege escalation, capabilities drop ALL
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: vault
+  namespace: railos
+  labels:
+    app: vault
+    app.kubernetes.io/name: vault
+    app.kubernetes.io/component: secret-store
+    app.kubernetes.io/part-of: railos-pilot
+    app.kubernetes.io/version: "1.16"
+spec:
+  serviceName: vault-headless
+  replicas: 1
+  updateStrategy:
+    type: RollingUpdate
+  podManagementPolicy: OrderedReady
+  selector:
+    matchLabels:
+      app: vault
+
+  template:
+    metadata:
+      labels:
+        app: vault
+        app.kubernetes.io/name: vault
+        app.kubernetes.io/component: secret-store
+        app.kubernetes.io/part-of: railos-pilot
+      annotations:
+        # Prometheus scrape for vault_up, vault_sealed, request counters (Req 17)
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8200"
+        prometheus.io/path: "/v1/sys/metrics"
+        prometheus.io/scheme: "http"
+
+    spec:
+      # ─── Security Context ────────────────────────────────────────────────────
+      # Vault official image uses UID 100 (vault user) and GID 1000.
+      # Restricted Pod Security Admission profile (Req 39 / Design §9.3).
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 100
+        runAsGroup: 1000
+        fsGroup: 1000
+
+      terminationGracePeriodSeconds: 30
+
+      serviceAccountName: vault
+
+      # ─── Init Container: create directories with correct ownership ───────────
+      initContainers:
+        - name: vault-init-dirs
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              echo "Creating Vault data and audit directories..."
+              mkdir -p /vault/data /vault/audit
+              chown -R 100:1000 /vault/data /vault/audit
+              chmod 750 /vault/data /vault/audit
+              echo "Directories ready."
+          volumeMounts:
+            - name: vault-data
+              mountPath: /vault/data
+            - name: vault-audit
+              mountPath: /vault/audit
+          securityContext:
+            runAsUser: 0
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+              add: ["CHOWN", "DAC_OVERRIDE"]
+
+      containers:
+        - name: vault
+          image: hashicorp/vault:1.16
+          imagePullPolicy: IfNotPresent
+
+          ports:
+            - name: vault-api
+              containerPort: 8200
+              protocol: TCP
+            - name: vault-cluster
+              containerPort: 8201
+              protocol: TCP
+
+          env:
+            # Skip TLS verification for internal health checks in dev mode
+            - name: VAULT_SKIP_VERIFY
+              value: "true"
+            # Vault address for health check CLI calls inside the container
+            - name: VAULT_ADDR
+              value: "http://127.0.0.1:8200"
+            # Config directory
+            - name: VAULT_CONFIG_DIR
+              value: "/vault/config"
+            # Log format
+            - name: VAULT_LOG_FORMAT
+              value: "json"
+            # IPC lock disable: required in containers without CAP_IPC_LOCK
+            - name: VAULT_DISABLE_MLOCK
+              value: "true"
+
+          command:
+            - vault
+            - server
+            - -config=/vault/config/vault.hcl
+
+          # ─── Resources ────────────────────────────────────────────────────────
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "1000m"
+              memory: "1Gi"
+
+          # ─── Probes ───────────────────────────────────────────────────────────
+          # Readiness: Vault is ready only when initialized and unsealed.
+          # The /v1/sys/health endpoint returns 200 when active, 429 when standby/sealed.
+          readinessProbe:
+            httpGet:
+              path: /v1/sys/health?standbyok=true
+              port: vault-api
+              scheme: HTTP
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+            successThreshold: 1
+
+          livenessProbe:
+            httpGet:
+              path: /v1/sys/health?standbyok=true&sealedok=true&uninitok=true
+              port: vault-api
+              scheme: HTTP
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 5
+
+          startupProbe:
+            httpGet:
+              path: /v1/sys/health?standbyok=true&sealedok=true&uninitok=true
+              port: vault-api
+              scheme: HTTP
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 30   # 2.5 minutes startup window
+
+          volumeMounts:
+            - name: vault-config
+              mountPath: /vault/config
+              readOnly: true
+            - name: vault-data
+              mountPath: /vault/data
+            - name: vault-audit
+              mountPath: /vault/audit
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+              # IPC_LOCK is normally needed by Vault to prevent swapping secrets to disk.
+              # It is disabled via VAULT_DISABLE_MLOCK=true above since most container
+              # environments don't grant this capability.
+              # In production, add: add: ["IPC_LOCK"] and set VAULT_DISABLE_MLOCK=false
+            readOnlyRootFilesystem: false   # Vault writes to /vault/data and /vault/audit
+            runAsNonRoot: true
+            runAsUser: 100
+
+      # ─── Volumes ──────────────────────────────────────────────────────────────
+      volumes:
+        - name: vault-config
+          configMap:
+            name: vault-config
+            items:
+              - key: vault.hcl
+                path: vault.hcl
+
+  # ─── VolumeClaimTemplates ──────────────────────────────────────────────────────
+  # 10 Gi PVC for Vault data (encrypted secrets) and audit log.
+  # The audit log is append-only by Vault's design (never truncated or rotated unless
+  # explicitly configured). For production, use a separate PVC for audit logs with
+  # an immutable/WORM storage class to prevent tampering.
+  volumeClaimTemplates:
+    - metadata:
+        name: vault-data
+        labels:
+          app: vault
+          app.kubernetes.io/part-of: railos-pilot
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        storageClassName: standard
+        resources:
+          requests:
+            storage: 8Gi     # Encrypted secret storage
+
+    - metadata:
+        name: vault-audit
+        labels:
+          app: vault
+          app.kubernetes.io/part-of: railos-pilot
+          railos-audit-log: "true"    # Label for backup/WORM policy targeting
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        # Production: use a WORM or append-only storage class here.
+        # On-prem: Longhorn with replication. Cloud: S3-backed WORM via CSI driver.
+        storageClassName: standard
+        resources:
+          requests:
+            storage: 2Gi     # Audit log: 2 Gi provides ~2 years at typical log volume
+
+---
+# ServiceAccount for Vault pod (used by init Job for Kubernetes auth)
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: vault
+  namespace: railos
+  labels:
+    app.kubernetes.io/name: vault
+    app.kubernetes.io/component: secret-store
+    app.kubernetes.io/part-of: railos-pilot

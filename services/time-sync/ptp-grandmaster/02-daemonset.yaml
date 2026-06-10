@@ -1,0 +1,131 @@
+---
+# PTP Grandmaster DaemonSet
+# Runs on zone-compute nodes (GPS hardware clock attached).
+# Requires NET_ADMIN + SYS_TIME capabilities — deployed in railos-system (privileged PSA).
+# Satisfies Design §3.2: GPS-disciplined PTP grandmaster at zone compute node.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: ptp-grandmaster
+  namespace: railos-system
+  labels:
+    app.kubernetes.io/name: ptp-grandmaster
+    app.kubernetes.io/component: time-sync
+    app.kubernetes.io/part-of: railos-pilot
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ptp-grandmaster
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ptp-grandmaster
+        app.kubernetes.io/component: time-sync
+        app.kubernetes.io/part-of: railos-pilot
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9560"    # ptp4l prometheus exporter (if installed)
+    spec:
+      # Only run on zone-compute nodes with GPS hardware clock
+      nodeSelector:
+        railos.io/role: zone-compute
+      tolerations:
+        - key: railos.io/role
+          operator: Equal
+          value: zone-compute
+          effect: NoSchedule
+
+      # Host network needed for raw PTP Ethernet frames / UDP multicast
+      hostNetwork: true
+      hostPID: true
+      dnsPolicy: ClusterFirstWithHostNet
+
+      serviceAccountName: default
+
+      volumes:
+        - name: ptp-config
+          configMap:
+            name: ptp-grandmaster-config
+        - name: dev
+          hostPath:
+            path: /dev
+
+      initContainers:
+        - name: check-ptp-device
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              echo "Checking for PTP hardware clock device..."
+              ls /dev/ptp0 && echo "PTP device found." || \
+                (echo "WARNING: /dev/ptp0 not found — grandmaster will run in software mode"; exit 0)
+          volumeMounts:
+            - name: dev
+              mountPath: /dev
+          securityContext:
+            privileged: true
+
+      containers:
+        # ptp4l — IEEE 1588 grandmaster daemon
+        - name: ptp4l
+          image: ghcr.io/openshift/linuxptp-daemon:latest
+          imagePullPolicy: IfNotPresent
+          command:
+            - /usr/sbin/ptp4l
+            - -f
+            - /etc/ptp4l/ptp4l.conf
+            - -i
+            - eth0        # NIC connected to PTP network — adjust to actual NIC name
+            - -m           # print to stdout
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "64Mi"
+            limits:
+              cpu: "500m"
+              memory: "128Mi"
+          securityContext:
+            privileged: false
+            capabilities:
+              add: ["NET_ADMIN", "SYS_TIME", "NET_RAW"]
+              drop: []
+          volumeMounts:
+            - name: ptp-config
+              mountPath: /etc/ptp4l
+            - name: dev
+              mountPath: /dev
+
+        # phc2sys — synchronise CLOCK_REALTIME to PHC
+        - name: phc2sys
+          image: ghcr.io/openshift/linuxptp-daemon:latest
+          imagePullPolicy: IfNotPresent
+          command:
+            - /usr/sbin/phc2sys
+            - -s
+            - /dev/ptp0
+            - -c
+            - CLOCK_REALTIME
+            - -n
+            - "0"
+            - -O
+            - "-37"
+            - -m           # print to stdout
+            - -u
+            - "60"
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "32Mi"
+            limits:
+              cpu: "200m"
+              memory: "64Mi"
+          securityContext:
+            capabilities:
+              add: ["SYS_TIME"]
+              drop: []
+          volumeMounts:
+            - name: dev
+              mountPath: /dev

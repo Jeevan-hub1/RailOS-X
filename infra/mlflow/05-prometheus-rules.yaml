@@ -1,0 +1,179 @@
+---
+# MLflow Tracking Server — Prometheus Alerting Rules
+#
+# Requires Prometheus Operator (PrometheusRule CRD).
+# MLflow 2.x exposes basic process metrics via the Prometheus client when the
+# MLFLOW_ENABLE_PROMETHEUS_METRICS env var is set (available since 2.x).
+# Gunicorn also exposes worker process metrics via prometheus_multiprocess.
+#
+# Key metrics:
+#   up{job="mlflow"}                                     — scrape health
+#   kube_deployment_status_replicas_available{deployment="mlflow"} — replica count
+#   mlflow_http_requests_total{method, endpoint, status} — request counters
+#   mlflow_run_count                                      — total experiment runs
+#   mlflow_registered_model_count                         — registered model count
+#   mlflow_model_version_count{stage}                     — versions per stage
+#
+# Satisfies:
+#   - Req 11:       MLflow availability monitoring (model governance must not silently fail)
+#   - Req 17:       Prometheus metrics for all Tier 4 infrastructure
+#   - Design §10.1: MLflow HA monitoring (Primary + read replica)
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: mlflow-alerts
+  namespace: railos
+  labels:
+    app.kubernetes.io/name: mlflow
+    app.kubernetes.io/component: monitoring
+    app.kubernetes.io/part-of: railos-pilot
+    prometheus: railos-prometheus
+    role: alert-rules
+spec:
+  groups:
+    # ─── MLflow Availability ─────────────────────────────────────────────────────
+    - name: mlflow.availability
+      interval: 30s
+      rules:
+        # MLflow is not reachable — training jobs cannot log runs or register models
+        - alert: MLflowDown
+          expr: |
+            up{job="mlflow"} == 0
+          for: 2m
+          labels:
+            severity: critical
+            component: mlflow
+            team: railos-mlops
+          annotations:
+            summary: "MLflow tracking server is unreachable"
+            description: >
+              Prometheus cannot scrape the MLflow metrics endpoint.
+              ML training jobs cannot log parameters, metrics, or artifacts.
+              Model governance (Requirement 11) is degraded.
+              Check: kubectl get pods -n railos -l app=mlflow
+
+        # Fewer than 2 replicas available — loss of second pod means no HA
+        - alert: MLflowReplicaCountLow
+          expr: |
+            kube_deployment_status_replicas_available{namespace="railos", deployment="mlflow"} < 2
+          for: 3m
+          labels:
+            severity: warning
+            component: mlflow
+            team: railos-mlops
+          annotations:
+            summary: "MLflow Deployment has fewer than 2 available replicas"
+            description: >
+              MLflow Deployment 'mlflow' in namespace railos has
+              {{ $value }} available replica(s) — expected 2.
+              Single-replica operation risks tracking data loss during a pod failure.
+              Check: kubectl rollout status deployment/mlflow -n railos
+
+        # Both replicas down — complete MLflow outage
+        - alert: MLflowTotalOutage
+          expr: |
+            kube_deployment_status_replicas_available{namespace="railos", deployment="mlflow"} == 0
+          for: 1m
+          labels:
+            severity: critical
+            component: mlflow
+            team: railos-mlops
+          annotations:
+            summary: "CRITICAL: MLflow is completely unavailable (0 replicas)"
+            description: >
+              All MLflow replicas are unavailable.
+              No ML training run tracking or model registration is possible.
+              Model governance (Requirement 11) is fully offline.
+              Immediate investigation required.
+
+    # ─── Model Registration Rate ─────────────────────────────────────────────────
+    - name: mlflow.model_governance
+      interval: 60s
+      rules:
+        # No new model registrations in 24h during active development — possible pipeline break
+        - alert: MLflowNoModelRegistrationActivity
+          expr: |
+            increase(mlflow_model_version_count[24h]) == 0
+            and
+            day_of_week() >= 1 and day_of_week() <= 5
+          for: 30m
+          labels:
+            severity: info
+            component: mlflow
+            team: railos-mlops
+          annotations:
+            summary: "No new MLflow model versions registered in 24 hours (weekday)"
+            description: >
+              No new model versions have been registered in MLflow in the last 24 hours
+              on a weekday. This may indicate:
+              - Training pipelines are idle (expected during non-training periods)
+              - A pipeline failure preventing model registration
+              - Federated Learning rounds are being aborted (check Federated Learning logs)
+              Investigate if unexpected: kubectl logs -n railos -l app=mlflow
+
+        # High model registration rate — possible automation error or runaway training
+        - alert: MLflowAbnormallyHighModelRegistrationRate
+          expr: |
+            increase(mlflow_model_version_count[1h]) > 100
+          for: 5m
+          labels:
+            severity: warning
+            component: mlflow
+            team: railos-mlops
+          annotations:
+            summary: "MLflow: abnormally high model registration rate (>100/hour)"
+            description: >
+              MLflow has registered {{ $value }} model versions in the last hour.
+              This is abnormally high and may indicate a loop in the training pipeline
+              or a misconfigured experiment that registers a version on every iteration.
+              Review: kubectl exec -n railos deploy/mlflow -- \
+                mlflow models search --order-by "timestamp DESC" --max-results 20
+
+    # ─── MLflow HTTP Error Rate ───────────────────────────────────────────────────
+    - name: mlflow.requests
+      interval: 30s
+      rules:
+        - alert: MLflowHighErrorRate
+          expr: |
+            (
+              sum(rate(mlflow_http_requests_total{status=~"5.."}[5m]))
+              /
+              sum(rate(mlflow_http_requests_total[5m]))
+            ) > 0.10
+          for: 5m
+          labels:
+            severity: warning
+            component: mlflow
+            team: railos-mlops
+          annotations:
+            summary: "MLflow: >10% HTTP 5xx error rate"
+            description: >
+              MLflow is returning {{ $value | humanizePercentage }} 5xx errors.
+              Check PostgreSQL connectivity and MinIO artifact store health.
+              kubectl logs -n railos -l app=mlflow --tail=50
+
+    # ─── Backend Store Connectivity ───────────────────────────────────────────────
+    - name: mlflow.backend
+      interval: 60s
+      rules:
+        # MLflow run count not increasing while training is expected
+        # (informational — complements model registration alert)
+        - alert: MLflowPostgreSQLConnectivitySuspected
+          expr: |
+            (
+              sum(rate(mlflow_http_requests_total{endpoint=~"/api/2.0/mlflow/runs/.*", status="500"}[5m]))
+              /
+              sum(rate(mlflow_http_requests_total{endpoint=~"/api/2.0/mlflow/runs/.*"}[5m]) + 0.001)
+            ) > 0.20
+          for: 3m
+          labels:
+            severity: critical
+            component: mlflow
+            team: railos-mlops
+          annotations:
+            summary: "MLflow run API returning >20% 500 errors — possible PostgreSQL issue"
+            description: >
+              Over 20% of MLflow run API calls are failing with HTTP 500.
+              This typically indicates a PostgreSQL connectivity or schema issue.
+              Check: kubectl get pods -n railos -l app=postgresql
+              Check: kubectl logs -n railos -l app=mlflow --tail=50 | grep -i "error\|exception"

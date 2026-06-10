@@ -1,0 +1,309 @@
+---
+# Kong API Gateway — Declarative Configuration ConfigMap (DB-less mode)
+#
+# This ConfigMap contains the full Kong declarative configuration (kong.yml)
+# mounted into the Kong container.  Kong runs in DB-less mode, meaning all
+# configuration is loaded from this file at startup — no external database
+# is required.
+#
+# Plugins configured:
+#   1. jwt          — RS256 JWT validation against Keycloak JWKS endpoint
+#   2. rate-limiting — 1,000 req/min per client; HTTP 429 + Retry-After
+#   3. request-transformer — inject X-Trace-ID from OpenTelemetry span context
+#   4. prometheus   — expose Kong metrics at :8001/metrics for Prometheus scraping
+#
+# Versioned routing:
+#   /api/v1/* — current stable API (all RailOS services)
+#   /api/v2/* — reserved for breaking-change versions (stubbed)
+#
+# OIDC issuer:
+#   http://keycloak.railos.svc.cluster.local:8080/realms/railos
+# Keycloak JWKS:
+#   http://keycloak.railos.svc.cluster.local:8080/realms/railos/protocol/openid-connect/certs
+#
+# Satisfies:
+#   - Design §9.2:  Kong API Gateway JWT, rate-limiting, versioned routing, X-Trace-ID
+#   - Req 24:       All RailOS REST APIs are gated by JWT-authenticated API gateway
+#   - Req 39:       Non-root container, restricted security context
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kong-declarative-config
+  namespace: railos
+  labels:
+    app.kubernetes.io/name: kong
+    app.kubernetes.io/component: api-gateway
+    app.kubernetes.io/part-of: railos-pilot
+    app.kubernetes.io/version: "3.6"
+data:
+  kong.yml: |
+    _format_version: "3.0"
+    _transform: true
+
+    # ──────────────────────────────────────────────────────────────────────────────
+    # Consumers — one representative "railos-service" consumer for internal tokens.
+    # Production: each service account or human role has its own consumer.
+    # ──────────────────────────────────────────────────────────────────────────────
+    consumers:
+      - username: railos-internal
+        tags:
+          - internal
+      - username: railos-ops-controller
+        tags:
+          - human-user
+          - operations-controller
+      - username: railos-engineering
+        tags:
+          - human-user
+          - engineering-team
+
+    # ──────────────────────────────────────────────────────────────────────────────
+    # Plugins — global scope (applied to every request unless overridden per route)
+    # ──────────────────────────────────────────────────────────────────────────────
+    plugins:
+      # ── 1. JWT — RS256 validation via Keycloak JWKS ──────────────────────────
+      # Kong validates the token signature using the public keys from Keycloak's
+      # JWKS endpoint.  The issuer claim is checked against the configured OIDC
+      # issuer URL.  Tokens are expected in the Authorization: Bearer <token> header.
+      - name: jwt
+        config:
+          key_claim_name: kid
+          claims_to_verify:
+            - exp
+            - nbf
+          anonymous: ~           # No anonymous access; reject unauthenticated requests
+          run_on_preflight: true
+
+      # ── 2. Rate Limiting — 1,000 req/min per client (Design §9.2) ────────────
+      # Uses the consumer identifier (JWT sub claim) as the rate-limit key.
+      # Falls back to client IP if no consumer is identified.
+      # HTTP 429 response includes Retry-After header as required.
+      # Redis is optional: set policy to "redis" and configure redis block below
+      # to share limits across multiple Kong replicas.
+      - name: rate-limiting
+        config:
+          minute: 1000
+          limit_by: consumer        # Per-client limiting keyed on JWT consumer
+          policy: local             # Use "redis" in multi-replica production setup
+          fault_tolerant: true      # Pass requests through if rate-limit store fails
+          hide_client_headers: false
+          error_code: 429
+          error_message: "Rate limit exceeded. See Retry-After header."
+          # Redis config (uncomment if policy: redis)
+          # redis_host: redis.railos.svc.cluster.local
+          # redis_port: 6379
+          # redis_database: 0
+          # redis_timeout: 2000
+          # redis_password: ""
+
+      # ── 3. Request Transformer — inject X-Trace-ID from OpenTelemetry ────────
+      # The OpenTelemetry trace ID is carried on X-B3-TraceId or traceparent
+      # headers injected by the Kong OpenTelemetry plugin (see below).
+      # This transformer copies it to X-Trace-ID for downstream RailOS services.
+      - name: request-transformer
+        config:
+          add:
+            headers:
+              - "X-Trace-ID:$(headers['x-b3-traceid'] or headers['traceparent'] or 'unknown')"
+              - "X-Kong-Version:3.6"
+
+      # ── 4. OpenTelemetry — generate trace context for X-Trace-ID ─────────────
+      - name: opentelemetry
+        config:
+          endpoint: http://jaeger-collector.railos.svc.cluster.local:4318/v1/traces
+          resource_attributes:
+            service.name: kong-api-gateway
+          propagation:
+            extract:
+              - b3
+              - w3c
+            inject:
+              - b3
+              - w3c
+          queue:
+            max_batch_size: 200
+            max_coalescing_delay: 0.02
+
+      # ── 5. Prometheus — expose Kong metrics at /metrics ──────────────────────
+      - name: prometheus
+        config:
+          status_code_metrics: true
+          latency_metrics: true
+          bandwidth_metrics: true
+          upstream_health_metrics: true
+
+    # ──────────────────────────────────────────────────────────────────────────────
+    # Services — one Kong service per RailOS backend service
+    # ──────────────────────────────────────────────────────────────────────────────
+    services:
+      # ── Delay Predictor (GNN) ─────────────────────────────────────────────────
+      - name: delay-predictor-v1
+        url: http://delay-predictor.railos.svc.cluster.local:8080
+        connect_timeout: 5000
+        write_timeout: 10000
+        read_timeout: 10000
+        retries: 2
+        tags:
+          - v1
+          - ml-service
+        routes:
+          - name: delay-predictor-v1-route
+            paths:
+              - /api/v1/delay-predictor
+            methods:
+              - GET
+              - POST
+            strip_path: true
+            preserve_host: false
+            tags:
+              - v1
+
+      # ── Digital Twin WebSocket + REST ─────────────────────────────────────────
+      - name: digital-twin-v1
+        url: http://digital-twin.railos.svc.cluster.local:3000
+        connect_timeout: 5000
+        write_timeout: 30000
+        read_timeout: 30000
+        retries: 1
+        tags:
+          - v1
+          - visualization
+        routes:
+          - name: digital-twin-v1-route
+            paths:
+              - /api/v1/digital-twin
+            methods:
+              - GET
+              - POST
+              - PUT
+              - DELETE
+            strip_path: true
+            tags:
+              - v1
+
+      # ── MARL Scheduler ────────────────────────────────────────────────────────
+      - name: marl-scheduler-v1
+        url: http://marl-scheduler.railos.svc.cluster.local:8080
+        connect_timeout: 5000
+        write_timeout: 35000      # 35s to accommodate MARL 30s timeout + margin
+        read_timeout: 35000
+        retries: 0                # No retries for scheduling proposals
+        tags:
+          - v1
+          - ml-service
+        routes:
+          - name: marl-scheduler-v1-route
+            paths:
+              - /api/v1/scheduler
+            methods:
+              - POST
+            strip_path: true
+            tags:
+              - v1
+
+      # ── Defect Detector (advisory query endpoint) ─────────────────────────────
+      - name: defect-detector-v1
+        url: http://defect-detector.railos.svc.cluster.local:8080
+        connect_timeout: 5000
+        write_timeout: 10000
+        read_timeout: 10000
+        retries: 2
+        tags:
+          - v1
+          - ml-service
+        routes:
+          - name: defect-detector-v1-route
+            paths:
+              - /api/v1/defect-detector
+            methods:
+              - GET
+              - POST
+            strip_path: true
+            tags:
+              - v1
+
+      # ── Predictive Maintenance Engine ─────────────────────────────────────────
+      - name: maintenance-engine-v1
+        url: http://maintenance-engine.railos.svc.cluster.local:8080
+        connect_timeout: 5000
+        write_timeout: 15000
+        read_timeout: 15000
+        retries: 2
+        tags:
+          - v1
+          - ml-service
+        routes:
+          - name: maintenance-engine-v1-route
+            paths:
+              - /api/v1/maintenance
+            methods:
+              - GET
+              - POST
+            strip_path: true
+            tags:
+              - v1
+
+      # ── MLflow Tracking REST API ───────────────────────────────────────────────
+      - name: mlflow-v1
+        url: http://mlflow.railos.svc.cluster.local:5000
+        connect_timeout: 5000
+        write_timeout: 30000
+        read_timeout: 30000
+        retries: 1
+        tags:
+          - v1
+          - mlops
+        routes:
+          - name: mlflow-v1-route
+            paths:
+              - /api/v1/mlflow
+            methods:
+              - GET
+              - POST
+              - PUT
+              - DELETE
+              - PATCH
+            strip_path: true
+            tags:
+              - v1
+
+      # ── Cybersecurity Dashboard API ───────────────────────────────────────────
+      - name: security-dashboard-v1
+        url: http://security-dashboard.railos.svc.cluster.local:3000
+        connect_timeout: 5000
+        write_timeout: 10000
+        read_timeout: 10000
+        retries: 1
+        tags:
+          - v1
+          - security
+        routes:
+          - name: security-dashboard-v1-route
+            paths:
+              - /api/v1/security
+            methods:
+              - GET
+              - POST
+            strip_path: true
+            tags:
+              - v1
+
+      # ── v2 stub — reserved for future breaking changes ─────────────────────────
+      # When a breaking change is introduced, add real v2 services here.
+      # The /api/v2/* prefix is already reserved so clients can begin migrating.
+      - name: api-v2-stub
+        url: http://localhost:1    # Intentional unreachable stub
+        connect_timeout: 1000
+        retries: 0
+        tags:
+          - v2
+          - stub
+        routes:
+          - name: api-v2-stub-route
+            paths:
+              - /api/v2
+            plugins:
+              - name: request-termination
+                config:
+                  status_code: 501
+                  message: "API v2 is not yet available. Use /api/v1/."

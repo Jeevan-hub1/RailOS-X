@@ -1,0 +1,65 @@
+---
+# PTP Boundary Clock DaemonSet — Edge_Node stations
+# Satisfies Design §3.2: IEEE 1588 boundary clocks at each station Edge_Node.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: ptp-boundary
+  namespace: railos-system
+  labels:
+    app.kubernetes.io/name: ptp-boundary
+    app.kubernetes.io/component: time-sync
+    app.kubernetes.io/part-of: railos-pilot
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ptp-boundary
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ptp-boundary
+        app.kubernetes.io/component: time-sync
+        app.kubernetes.io/part-of: railos-pilot
+    spec:
+      nodeSelector:
+        railos.io/role: edge-node
+      tolerations:
+        - key: railos.io/role
+          operator: Equal
+          value: edge-node
+          effect: NoSchedule
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      volumes:
+        - name: ptp-config
+          configMap:
+            name: ptp-boundary-config
+        - name: dev
+          hostPath:
+            path: /dev
+      containers:
+        - name: ptp4l-boundary
+          image: ghcr.io/openshift/linuxptp-daemon:latest
+          imagePullPolicy: IfNotPresent
+          command:
+            - /usr/sbin/ptp4l
+            - -f
+            - /etc/ptp4l/ptp4l.conf
+            - -m
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "64Mi"
+            limits:
+              cpu: "300m"
+              memory: "128Mi"
+          securityContext:
+            capabilities:
+              add: ["NET_ADMIN", "SYS_TIME", "NET_RAW"]
+          volumeMounts:
+            - name: ptp-config
+              mountPath: /etc/ptp4l
+            - name: dev
+              mountPath: /dev

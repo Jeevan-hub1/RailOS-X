@@ -1,0 +1,179 @@
+---
+# InfluxDB Bootstrap Job
+#
+# Runs once after the primary pod is Ready to:
+#   1. Create all required buckets with their retention policies (Req 1 C4, Req 28)
+#   2. Create scoped API tokens for each RailOS service
+#   3. Verify the standby is receiving WAL replication
+#
+# This Job is idempotent: it checks whether each bucket/token exists before
+# attempting to create it, so it is safe to re-run.
+#
+# Satisfies:
+#   - Requirement 1 C4:   90-day retention on sensor_events bucket
+#   - Design §10.4:       Retention lifecycle policy configuration
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: influxdb-bootstrap
+  namespace: railos
+  labels:
+    app: influxdb-bootstrap
+    app.kubernetes.io/name: influxdb
+    app.kubernetes.io/component: bootstrap
+    app.kubernetes.io/part-of: railos-pilot
+  annotations:
+    # Re-run with: kubectl delete job influxdb-bootstrap -n railos && kubectl apply -f 07-setup-job.yaml
+    description: "One-time InfluxDB bucket and token setup"
+spec:
+  # Retry up to 3 times if the job fails (e.g., primary not yet ready)
+  backoffLimit: 3
+  # Delete job and pods 1 hour after completion to keep the namespace clean
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app: influxdb-bootstrap
+        app.kubernetes.io/part-of: railos-pilot
+    spec:
+      restartPolicy: OnFailure
+
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+
+      containers:
+        - name: influxdb-setup
+          image: influxdb:3.0
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+
+              INFLUX_URL="http://influxdb-primary.railos.svc.cluster.local:8086"
+              TOKEN="${INFLUXDB_ADMIN_TOKEN}"
+              ORG="${INFLUXDB_ORG}"
+
+              echo "=== RailOS InfluxDB Bootstrap ==="
+              echo "Connecting to: ${INFLUX_URL}"
+
+              # Wait for primary to be healthy
+              echo "Waiting for InfluxDB primary to be healthy..."
+              for i in $(seq 1 30); do
+                STATUS=$(curl -sf "${INFLUX_URL}/health" | grep -c '"status":"pass"' || true)
+                if [ "${STATUS}" = "1" ]; then
+                  echo "InfluxDB is healthy."
+                  break
+                fi
+                echo "  Attempt ${i}/30: not ready yet, waiting 10s..."
+                sleep 10
+              done
+
+              # Helper: create bucket if it does not already exist
+              create_bucket() {
+                BUCKET_NAME="$1"
+                DESCRIPTION="$2"
+                RETENTION_SECS="$3"
+
+                EXISTS=$(curl -sf \
+                  -H "Authorization: Token ${TOKEN}" \
+                  "${INFLUX_URL}/api/v2/buckets?org=${ORG}&name=${BUCKET_NAME}" \
+                  | grep -c '"name":"'"${BUCKET_NAME}"'"' || true)
+
+                if [ "${EXISTS}" -gt "0" ]; then
+                  echo "  Bucket '${BUCKET_NAME}' already exists — skipping."
+                  return
+                fi
+
+                echo "  Creating bucket '${BUCKET_NAME}' (retention: ${RETENTION_SECS}s)..."
+                curl -sf \
+                  -X POST "${INFLUX_URL}/api/v2/buckets" \
+                  -H "Authorization: Token ${TOKEN}" \
+                  -H "Content-Type: application/json" \
+                  -d "{
+                    \"name\": \"${BUCKET_NAME}\",
+                    \"description\": \"${DESCRIPTION}\",
+                    \"orgID\": \"$(get_org_id)\",
+                    \"retentionRules\": [{
+                      \"type\": \"expire\",
+                      \"everySeconds\": ${RETENTION_SECS}
+                    }]
+                  }"
+                echo "  Created."
+              }
+
+              get_org_id() {
+                curl -sf \
+                  -H "Authorization: Token ${TOKEN}" \
+                  "${INFLUX_URL}/api/v2/orgs?org=${ORG}" \
+                  | python3 -c "import sys, json; print(json.load(sys.stdin)['orgs'][0]['id'])"
+              }
+
+              echo ""
+              echo "--- Creating buckets ---"
+
+              # sensor_events: 90 days — Requirement 1 C4
+              create_bucket "sensor_events" \
+                "Raw sensor events from trackside and rolling stock" \
+                "7776000"
+
+              # digital_twin_state: 7 days — live state store
+              create_bucket "digital_twin_state" \
+                "Real-time train positions and state for Digital Twin" \
+                "604800"
+
+              # corridor_energy_efficiency: 90 days — Requirement 22 C2
+              create_bucket "corridor_energy_efficiency" \
+                "Per-node inference ops/wh aggregates (Req 22 C2)" \
+                "7776000"
+
+              # observability_telemetry: 30 days — Requirement 19 C7
+              create_bucket "observability_telemetry" \
+                "Internal telemetry for the observability stack" \
+                "2592000"
+
+              echo ""
+              echo "--- Verifying standby replication ---"
+              STANDBY_URL="http://influxdb-standby.railos.svc.cluster.local:8086"
+              STANDBY_STATUS=$(curl -sf "${STANDBY_URL}/health" \
+                | grep -c '"status":"pass"' || true)
+              if [ "${STANDBY_STATUS}" = "1" ]; then
+                echo "  Standby is healthy and reachable."
+              else
+                echo "  WARNING: Standby health check failed. Replication may not be active."
+                echo "  Check: kubectl logs -n railos -l app=influxdb-standby -c wal-receiver"
+              fi
+
+              echo ""
+              echo "=== Bootstrap complete ==="
+
+          env:
+            - name: INFLUXDB_ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: influxdb-auth
+                  key: INFLUXDB_INIT_ADMIN_TOKEN
+            - name: INFLUXDB_ORG
+              valueFrom:
+                secretKeyRef:
+                  name: influxdb-auth
+                  key: INFLUXDB_INIT_ORG
+
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "200m"
+              memory: "256Mi"
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 1000

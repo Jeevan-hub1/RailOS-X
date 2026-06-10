@@ -1,0 +1,334 @@
+---
+# InfluxDB 3.0 — Primary StatefulSet
+#
+# Satisfies:
+#   - Requirement 1 C4:   Stores raw sensor events with 90-day retention
+#   - Requirement 8 C1:   Time-series state store for Digital Twin (≤5s refresh)
+#   - Requirement 15/16:  Primary node of Primary+Standby HA pair; RPO ≤60s, RTO <5 min
+#   - Design §10.1:       InfluxDB 3.0 Primary + hot standby, continuous WAL replication
+#
+# Architecture notes:
+#   - Single-pod StatefulSet (InfluxDB 3.0 OSS is single-node; HA is achieved
+#     through WAL streaming to a hot standby, not through multi-primary clustering)
+#   - WAL streaming is handled by the 'wal-streamer' sidecar, which tails the WAL
+#     directory and forwards records to the standby over TCP port 8088
+#   - A PodDisruptionBudget (05-pdb.yaml) ensures the primary is not evicted
+#     during voluntary disruptions while the standby is unhealthy
+#   - PVC storage survives pod restarts; data is NOT lost on pod failure
+#
+# Replication lag monitoring:
+#   - The wal-streamer sidecar exposes influxdb_replication_lag_seconds on :9090/metrics
+#   - Prometheus alert fires if lag > 60s (see 07-prometheus-rules.yaml)
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: influxdb-primary
+  namespace: railos
+  labels:
+    app: influxdb-primary
+    app.kubernetes.io/name: influxdb
+    app.kubernetes.io/component: time-series-primary
+    app.kubernetes.io/part-of: railos-pilot
+    app.kubernetes.io/version: "3.0.0"
+spec:
+  serviceName: influxdb-primary-headless
+  replicas: 1           # Single primary — HA is achieved via standby, not multi-primary
+  updateStrategy:
+    type: RollingUpdate
+  podManagementPolicy: OrderedReady
+  selector:
+    matchLabels:
+      app: influxdb-primary
+
+  template:
+    metadata:
+      labels:
+        app: influxdb-primary
+        app.kubernetes.io/name: influxdb
+        app.kubernetes.io/component: time-series-primary
+        app.kubernetes.io/part-of: railos-pilot
+        influxdb-role: primary
+      annotations:
+        # Prometheus auto-discovery for InfluxDB native metrics (Req 17, Req 25)
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8086"
+        prometheus.io/path: "/metrics"
+        # Also scrape WAL streamer sidecar for replication lag metric
+        prometheus.io/scrape-extra-port: "9090"
+
+    spec:
+      # ─── Security Context ────────────────────────────────────────────────────
+      # Matches project-wide Pod Security Admission (restricted profile, Req 39)
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+
+      # ─── Scheduling: keep primary and standby on separate nodes ─────────────
+      # Ensures a single node failure does not lose both copies.
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchExpressions:
+                  - key: app.kubernetes.io/name
+                    operator: In
+                    values:
+                      - influxdb
+              topologyKey: kubernetes.io/hostname
+
+      terminationGracePeriodSeconds: 60
+
+      # ─── Init Container: ensure data directories exist with correct ownership ─
+      initContainers:
+        - name: influxdb-init-dirs
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              echo "Creating InfluxDB data directories..."
+              mkdir -p /var/lib/influxdb3/meta \
+                        /var/lib/influxdb3/data \
+                        /var/lib/influxdb3/wal
+              chown -R 1000:1000 /var/lib/influxdb3
+              echo "Directories ready."
+          volumeMounts:
+            - name: influxdb-data
+              mountPath: /var/lib/influxdb3
+          securityContext:
+            runAsUser: 0           # Needs root briefly to chown
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+              add: ["CHOWN", "DAC_OVERRIDE"]
+
+      containers:
+        # ─── Main InfluxDB 3.0 Container ────────────────────────────────────────
+        - name: influxdb
+          image: influxdb:3.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http-api
+              containerPort: 8086
+              protocol: TCP
+            - name: wal-stream
+              containerPort: 8088
+              protocol: TCP
+
+          env:
+            # Bootstrap admin credentials from Secret
+            - name: DOCKER_INFLUXDB_INIT_MODE
+              value: "setup"
+            - name: DOCKER_INFLUXDB_INIT_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: influxdb-auth
+                  key: INFLUXDB_INIT_USERNAME
+            - name: DOCKER_INFLUXDB_INIT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: influxdb-auth
+                  key: INFLUXDB_INIT_PASSWORD
+            - name: DOCKER_INFLUXDB_INIT_ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: influxdb-auth
+                  key: INFLUXDB_INIT_ADMIN_TOKEN
+            - name: DOCKER_INFLUXDB_INIT_ORG
+              valueFrom:
+                secretKeyRef:
+                  name: influxdb-auth
+                  key: INFLUXDB_INIT_ORG
+            - name: DOCKER_INFLUXDB_INIT_BUCKET
+              valueFrom:
+                secretKeyRef:
+                  name: influxdb-auth
+                  key: INFLUXDB_INIT_BUCKET
+            # Point to the config file on the mounted ConfigMap volume
+            - name: INFLUXD_CONFIG_PATH
+              value: "/etc/influxdb3/config.toml"
+            # Replication role — used by WAL streamer sidecar
+            - name: INFLUXDB_REPLICATION_ROLE
+              value: "primary"
+            # Data directory paths
+            - name: INFLUXD_ENGINE_PATH
+              value: "/var/lib/influxdb3/data"
+            - name: INFLUXD_WAL_DIR
+              value: "/var/lib/influxdb3/wal"
+            - name: INFLUXD_META_DIR
+              value: "/var/lib/influxdb3/meta"
+
+          # ─── Resources ────────────────────────────────────────────────────────
+          # Sized for 10k events/s ingestion from Flink writer (Req 1 C6)
+          # plus concurrent Digital Twin read traffic.
+          resources:
+            requests:
+              cpu: "1000m"
+              memory: "4Gi"
+            limits:
+              cpu: "4000m"
+              memory: "8Gi"
+
+          # ─── Readiness Probe ──────────────────────────────────────────────────
+          # Only mark Ready when the HTTP API responds with 200.
+          # This prevents traffic being routed to a node still replaying WAL.
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http-api
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+            successThreshold: 1
+
+          # ─── Liveness Probe ───────────────────────────────────────────────────
+          # Restart the container if the HTTP API is completely unresponsive.
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http-api
+            initialDelaySeconds: 60
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 5
+
+          # ─── Startup Probe ────────────────────────────────────────────────────
+          # Give InfluxDB up to 5 minutes to initialize on first boot (large dataset).
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http-api
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 30    # 30 × 10s = 5 minutes maximum startup window
+
+          volumeMounts:
+            - name: influxdb-data
+              mountPath: /var/lib/influxdb3
+            - name: influxdb-config
+              mountPath: /etc/influxdb3
+              readOnly: true
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: false   # InfluxDB writes to its data dir
+            runAsNonRoot: true
+            runAsUser: 1000
+
+        # ─── WAL Streamer Sidecar ─────────────────────────────────────────────
+        # Tails the WAL directory and forwards WAL segments to the standby via TCP.
+        # This is the mechanism that provides continuous WAL replication (Req 15/16).
+        #
+        # Implementation note: InfluxDB 3.0 OSS does not ship built-in WAL
+        # streaming replication. This sidecar uses inotifywait to detect new WAL
+        # segment files and rsync/netcat to forward them to the standby.
+        # In a production deployment, consider replacing this with:
+        #   - InfluxDB 3.0 Enterprise replication (if available)
+        #   - A dedicated WAL shipping tool (e.g., Litestream adapted for InfluxDB WAL)
+        #   - Storage-level replication (e.g., Longhorn/Rook volume mirroring)
+        - name: wal-streamer
+          image: railos/influxdb-wal-streamer:1.0.0
+          # NOTE: Build this image from infra/influxdb/wal-streamer/Dockerfile
+          # It contains: inotify-tools, rsync/nc, and the wal-stream.sh script.
+          # A reference Dockerfile and script are included in the wal-streamer/ subdirectory.
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: metrics
+              containerPort: 9090
+              protocol: TCP
+
+          env:
+            - name: WAL_DIR
+              value: "/var/lib/influxdb3/wal"
+            - name: STANDBY_HOST
+              value: "influxdb-standby-0.influxdb-standby-headless.railos.svc.cluster.local"
+            - name: STANDBY_PORT
+              value: "8088"
+            - name: REPLICATION_LAG_THRESHOLD_SECONDS
+              value: "60"     # Alert threshold matching RPO requirement (Req 15/16)
+            - name: METRICS_PORT
+              value: "9090"
+            - name: REPLICATION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: influxdb-auth
+                  key: INFLUXDB_REPLICATION_SECRET
+
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: metrics
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+
+          livenessProbe:
+            httpGet:
+              path: /live
+              port: metrics
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 3
+            failureThreshold: 5
+
+          volumeMounts:
+            - name: influxdb-data
+              mountPath: /var/lib/influxdb3
+              readOnly: true    # Streamer only reads the WAL; never writes
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 1000
+
+      # ─── Volumes ─────────────────────────────────────────────────────────────
+      volumes:
+        - name: influxdb-config
+          configMap:
+            name: influxdb-config
+            items:
+              - key: config.toml
+                path: config.toml
+              - key: retention-policies.json
+                path: retention-policies.json
+
+  # ─── VolumeClaimTemplates ─────────────────────────────────────────────────────
+  # Primary PVC: 500 Gi for 90-day sensor event storage.
+  # Size rationale:
+  #   10,000 events/s × 90 days × ~500 bytes/event (compressed) ≈ 390 Gi
+  #   500 Gi provides ~28% headroom for growth and WAL accumulation.
+  volumeClaimTemplates:
+    - metadata:
+        name: influxdb-data
+        labels:
+          app: influxdb-primary
+          app.kubernetes.io/part-of: railos-pilot
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        # Replace 'standard' with your cluster's SSD-backed storage class.
+        # Recommended: gp3 (AWS EKS), premium-rwo (GKE), managed-premium (AKS)
+        # SSD storage is mandatory — spinning disk cannot sustain 10k writes/s.
+        storageClassName: standard
+        resources:
+          requests:
+            storage: 500Gi

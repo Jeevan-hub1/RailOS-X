@@ -1,0 +1,211 @@
+---
+# Kong API Gateway — Prometheus Alerting Rules
+#
+# Requires Prometheus Operator (PrometheusRule CRD).
+# If not using the Operator, copy the 'groups:' block into your Prometheus
+# configuration file manually.
+#
+# Key Kong metrics (exposed via the prometheus plugin on :8001/metrics):
+#   kong_http_requests_total{service, route, method, code}  — request count by status
+#   kong_bandwidth_bytes{direction, service, route}          — bandwidth in/out
+#   kong_latency_ms{type="kong|upstream|request", service}  — processing latency
+#   kong_nginx_connections_total{state}                      — nginx connection states
+#   kong_memory_lua_shared_dict_bytes{dict}                  — Lua shared dict usage
+#
+# Rate-limit plugin metrics (custom counters emitted by rate-limiting plugin):
+#   kong_consumer_rl_counter{consumer, identifier}           — per-consumer counter
+#
+# Satisfies:
+#   - Design §9.2:  Rate limit monitoring, latency P95 tracking
+#   - Req 17:       Prometheus metrics for all Tier 4 infrastructure
+#   - Req 25:       End-to-end latency monitoring (Kong contributes to e2e trace)
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: kong-alerts
+  namespace: railos
+  labels:
+    app.kubernetes.io/name: kong
+    app.kubernetes.io/component: monitoring
+    app.kubernetes.io/part-of: railos-pilot
+    prometheus: railos-prometheus
+    role: alert-rules
+spec:
+  groups:
+    # ─── Kong Availability ───────────────────────────────────────────────────────
+    - name: kong.availability
+      interval: 30s
+      rules:
+        - alert: KongProxyDown
+          expr: |
+            up{job="kong-admin"} == 0
+          for: 1m
+          labels:
+            severity: critical
+            component: kong
+            team: railos-infra
+          annotations:
+            summary: "Kong API Gateway is not reachable"
+            description: >
+              Prometheus cannot scrape the Kong Admin API metrics endpoint.
+              All RailOS REST API traffic is blocked.
+              Check: kubectl get pods -n railos -l app=kong
+
+        - alert: KongReplicaCountLow
+          expr: |
+            kube_deployment_status_replicas_available{namespace="railos", deployment="kong"} < 2
+          for: 2m
+          labels:
+            severity: warning
+            component: kong
+            team: railos-infra
+          annotations:
+            summary: "Kong Deployment has fewer than 2 available replicas"
+            description: >
+              Kong Deployment 'kong' in namespace railos has
+              {{ $value }} available replica(s) — expected 2.
+              Gateway may be a single point of failure.
+              Check: kubectl rollout status deployment/kong -n railos
+
+    # ─── HTTP Request Rates and Error Rates ──────────────────────────────────────
+    - name: kong.requests
+      interval: 30s
+      rules:
+        # High 5xx error rate — downstream services may be unavailable
+        - alert: KongHighServerErrorRate
+          expr: |
+            (
+              sum(rate(kong_http_requests_total{code=~"5.."}[5m])) by (service)
+              /
+              sum(rate(kong_http_requests_total[5m])) by (service)
+            ) > 0.05
+          for: 3m
+          labels:
+            severity: warning
+            component: kong
+            team: railos-infra
+          annotations:
+            summary: "Kong: >5% server error rate on service {{ $labels.service }}"
+            description: >
+              Service {{ $labels.service }} has a 5xx error rate of
+              {{ $value | humanizePercentage }} over the last 5 minutes.
+              Investigate the upstream service health.
+
+        - alert: KongCriticalServerErrorRate
+          expr: |
+            (
+              sum(rate(kong_http_requests_total{code=~"5.."}[5m])) by (service)
+              /
+              sum(rate(kong_http_requests_total[5m])) by (service)
+            ) > 0.25
+          for: 1m
+          labels:
+            severity: critical
+            component: kong
+            team: railos-infra
+          annotations:
+            summary: "Kong: >25% server error rate on service {{ $labels.service }}"
+            description: >
+              Service {{ $labels.service }} has a critical 5xx error rate of
+              {{ $value | humanizePercentage }}. Upstream service may be completely down.
+
+    # ─── Rate Limit Hits ─────────────────────────────────────────────────────────
+    - name: kong.rate_limiting
+      interval: 30s
+      rules:
+        # Sustained rate of 429 responses indicates consumers consistently hitting limits.
+        # This may indicate a misconfigured client, runaway automation, or an attack.
+        - alert: KongRateLimitHitsElevated
+          expr: |
+            sum(rate(kong_http_requests_total{code="429"}[5m])) > 5
+          for: 5m
+          labels:
+            severity: warning
+            component: kong
+            team: railos-infra
+          annotations:
+            summary: "Kong: sustained rate-limit (HTTP 429) responses"
+            description: >
+              Kong is returning {{ $value | humanize }} HTTP 429 responses/second.
+              Check for misbehaving clients or possible DoS attempt.
+              Rate limit is configured at 1,000 req/min per consumer (Design §9.2).
+
+        - alert: KongRateLimitHitsCritical
+          expr: |
+            sum(rate(kong_http_requests_total{code="429"}[5m])) > 50
+          for: 2m
+          labels:
+            severity: critical
+            component: kong
+            team: railos-infra
+          annotations:
+            summary: "Kong: high volume of rate-limit hits — possible DoS"
+            description: >
+              Kong is returning {{ $value | humanize }} HTTP 429 responses/second.
+              This volume may indicate a denial-of-service attempt.
+              Review: kubectl logs -n railos -l app=kong --tail=100
+
+    # ─── Latency P95 ─────────────────────────────────────────────────────────────
+    - name: kong.latency
+      interval: 30s
+      rules:
+        # Kong gateway overhead P95 > 100ms is abnormal and may impact the 500ms SLA
+        - alert: KongGatewayLatencyHigh
+          expr: |
+            histogram_quantile(0.95,
+              sum(rate(kong_latency_ms_bucket{type="kong"}[5m])) by (le, service)
+            ) > 100
+          for: 5m
+          labels:
+            severity: warning
+            component: kong
+            team: railos-infra
+          annotations:
+            summary: "Kong gateway P95 latency >100ms for service {{ $labels.service }}"
+            description: >
+              Kong's own processing overhead (excluding upstream) P95 is
+              {{ $value | humanize }}ms for service {{ $labels.service }}.
+              This is unusually high; check Lua plugin overhead and rate-limiter store.
+
+        # Total request latency P95 > 2s will impact the delay predictor 2s SLA (Req 5 C1)
+        - alert: KongTotalRequestLatencyHigh
+          expr: |
+            histogram_quantile(0.95,
+              sum(rate(kong_latency_ms_bucket{type="request"}[5m])) by (le, service)
+            ) > 2000
+          for: 5m
+          labels:
+            severity: warning
+            component: kong
+            team: railos-infra
+            requirement: "REQ-5-C1"
+          annotations:
+            summary: "Kong total request P95 latency >2s for service {{ $labels.service }}"
+            description: >
+              Total P95 request latency (Kong + upstream) for service {{ $labels.service }}
+              is {{ $value | humanize }}ms. This may violate the Delay_Predictor 2s SLA
+              (Requirement 5 C1). Investigate upstream service performance.
+
+    # ─── Kong Memory ─────────────────────────────────────────────────────────────
+    - name: kong.memory
+      interval: 60s
+      rules:
+        - alert: KongLuaSharedDictHighUsage
+          expr: |
+            (
+              kong_memory_lua_shared_dict_bytes{dict="rate_limiting"}
+              /
+              kong_memory_lua_shared_dict_bytes{dict="rate_limiting", type="capacity"}
+            ) > 0.85
+          for: 10m
+          labels:
+            severity: warning
+            component: kong
+            team: railos-infra
+          annotations:
+            summary: "Kong rate-limiting shared dict is >85% full"
+            description: >
+              The Kong rate-limiting Lua shared dict is {{ $value | humanizePercentage }} full.
+              If it reaches 100%, rate limiting will stop working and all requests will pass.
+              Consider switching to Redis-backed rate limiting (policy: redis) for multi-replica
+              deployments to avoid this issue.

@@ -1,0 +1,57 @@
+---
+# PTP Grandmaster — ptp4l configuration (GPS-disciplined, Design §3.2)
+# Deployed on zone-compute nodes with a GPS hardware clock.
+# gm.ClockClass=6 = GPS/atomic primary reference (highest accuracy).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ptp-grandmaster-config
+  namespace: railos-system
+  labels:
+    app.kubernetes.io/name: ptp-grandmaster
+    app.kubernetes.io/part-of: railos-pilot
+data:
+  ptp4l.conf: |
+    [global]
+    # Grandmaster mode — this node disciplines all other clocks in the domain
+    clockClass               6
+    clockAccuracy            0x21
+    offsetScaledLogVariance  0x4E5D
+    free_running             0
+    freq_est_interval        1
+    dscp_event               0
+    dscp_general             0
+    dataset_comparison       ieee1588
+    G.8275.defaultDS.localPriority 128
+    network_transport        UDPv4
+    delay_mechanism          E2E
+    time_stamping            hardware
+    twoStepFlag              1
+    summary_interval         0
+    # Log to stdout (captured by Kubernetes log driver)
+    logging_level            6
+    verbose                  0
+    message_tag              [GM]
+    use_syslog               0
+    logMinDelayReqInterval   0
+    logAnnounceInterval      1
+    logSyncInterval          0
+    announceReceiptTimeout   3
+    syncReceiptTimeout       0
+    transportSpecific        0x0
+    ptp_dst_mac              01:1B:19:00:00:00
+    p2p_dst_mac              01:80:C2:00:00:0E
+    domainNumber             0
+    priority1                128
+    priority2                128
+    slaveOnly                0
+
+  phc2sys.conf: |
+    # phc2sys synchronises the system clock (CLOCK_REALTIME) to the PTP
+    # hardware clock (PHC) on the NIC.
+    # -s: source clock (PHC device)
+    # -c: target clock (CLOCK_REALTIME)
+    # -O: UTC offset (seconds) — must match the GPS/GNSS UTC offset
+    PHC_DEVICE=/dev/ptp0
+    SYS_CLOCK=CLOCK_REALTIME
+    UTC_OFFSET=-37

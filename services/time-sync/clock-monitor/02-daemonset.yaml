@@ -1,0 +1,60 @@
+---
+# Clock Monitor DaemonSet — runs on every node (grandmaster + edge nodes)
+# Monitors PTP drift, publishes CLOCK_DRIFT_ALERT and CLOCK_UNRELIABLE flag.
+# Satisfies Tasks 2.3 and 2.4.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: clock-monitor
+  namespace: railos
+  labels:
+    app.kubernetes.io/name: clock-monitor
+    app.kubernetes.io/component: time-sync
+    app.kubernetes.io/part-of: railos-pilot
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: clock-monitor
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: clock-monitor
+        app.kubernetes.io/component: time-sync
+        app.kubernetes.io/part-of: railos-pilot
+    spec:
+      hostPID: true    # needed to call adjtimex() against host kernel
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+      containers:
+        - name: clock-monitor
+          image: railos/clock-monitor:1.0.0
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: clock-monitor-config
+          env:
+            - name: NODE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "200m"
+              memory: "128Mi"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: false   # writes clock status to /tmp
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

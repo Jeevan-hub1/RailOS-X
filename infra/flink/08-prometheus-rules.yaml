@@ -1,0 +1,203 @@
+---
+# Flink Prometheus Alerting Rules
+#
+# These rules complement the Flink built-in Prometheus metrics reporter
+# (configured in 01-configmap.yaml: metrics.reporters=prometheus).
+#
+# Key metrics emitted by Flink's PrometheusReporter:
+#   flink_jobmanager_job_numRestarts              — job restart count
+#   flink_jobmanager_job_lastCheckpointDuration   — last checkpoint duration (ms)
+#   flink_jobmanager_job_lastCheckpointSize       — last checkpoint size (bytes)
+#   flink_taskmanager_job_task_numRecordsIn*      — records processed per task
+#   flink_taskmanager_Status_JVM_Memory_Heap_Used — JVM heap usage
+#   flink_taskmanager_job_latency_source_id_*     — end-to-end latency histograms
+#
+# Satisfies:
+#   - Requirement 1 C2:  Alert when normalization SLA (500 ms) is at risk
+#   - Requirement 1 C6:  Alert on sustained throughput degradation
+#   - Requirement 17:    Prometheus metrics for all subsystems
+#   - Requirement 25:    End-to-end latency tracking
+#   - Design §8:         Flink → Prometheus metrics pipeline
+#
+# NOTE: This requires the Prometheus Operator (PrometheusRule CRD) to be
+# installed in the cluster. If using plain Prometheus, copy the rules into
+# your prometheus.yml rules_files section instead.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: flink-alerts
+  namespace: railos
+  labels:
+    app: flink
+    app.kubernetes.io/name: flink
+    app.kubernetes.io/part-of: railos-pilot
+    # Label required by Prometheus Operator to pick up this rule
+    prometheus: railos
+    role: alert-rules
+spec:
+  groups:
+    # ─── Job Health ──────────────────────────────────────────────────────────
+    - name: flink.job.health
+      interval: 30s
+      rules:
+        # Alert if any Flink job has been restarting frequently
+        # (indicates persistent failure, likely Kafka connectivity or OOM)
+        - alert: FlinkJobRestartingFrequently
+          expr: |
+            increase(flink_jobmanager_job_numRestarts[5m]) > 3
+          for: 2m
+          labels:
+            severity: warning
+            subsystem: data_pipeline
+          annotations:
+            summary: "Flink job restarting frequently"
+            description: >
+              Flink job {{ $labels.job_name }} has restarted more than 3 times
+              in the last 5 minutes. Check TaskManager logs for root cause.
+              Requirement 1 — stream processing continuity may be impacted.
+
+        # Alert if a Flink job enters FAILING or RESTARTING state
+        - alert: FlinkJobNotRunning
+          expr: |
+            flink_jobmanager_job_uptime < 0
+          for: 1m
+          labels:
+            severity: critical
+            subsystem: data_pipeline
+          annotations:
+            summary: "Flink job is not in RUNNING state"
+            description: >
+              Flink job {{ $labels.job_name }} is not RUNNING. Sensor event
+              processing is interrupted. Requirement 1 C2 (500 ms SLA) and
+              Requirement 1 C6 (10,000 events/s) cannot be satisfied.
+
+    # ─── Checkpoint Health ────────────────────────────────────────────────────
+    - name: flink.checkpoint
+      interval: 30s
+      rules:
+        # Alert if checkpoint duration exceeds 30 s (3× the 10 s interval)
+        # This indicates state growth or storage I/O bottleneck.
+        - alert: FlinkCheckpointDurationHigh
+          expr: |
+            flink_jobmanager_job_lastCheckpointDuration > 30000
+          for: 5m
+          labels:
+            severity: warning
+            subsystem: data_pipeline
+          annotations:
+            summary: "Flink checkpoint duration is high"
+            description: >
+              Last checkpoint for job {{ $labels.job_name }} took
+              {{ $value | humanizeDuration }} (threshold 30 s). Checkpoint
+              intervals may be skipped, increasing recovery time after failure.
+
+        # Alert if no checkpoint has completed in the last 60 s
+        # (checkpointing has effectively stalled)
+        - alert: FlinkCheckpointStalled
+          expr: |
+            (time() - flink_jobmanager_job_lastCheckpointCompletedTimestamp / 1000) > 60
+          for: 2m
+          labels:
+            severity: critical
+            subsystem: data_pipeline
+          annotations:
+            summary: "Flink checkpointing has stalled"
+            description: >
+              No successful checkpoint in the last 60 s for job
+              {{ $labels.job_name }}. State recovery window is growing.
+              Verify checkpoint storage PVC health (flink-checkpoints).
+
+    # ─── Latency SLA — Requirement 1 C2 (500 ms normalization) ──────────────
+    - name: flink.latency
+      interval: 15s
+      rules:
+        # Flink end-to-end latency histogram: p95 > 400 ms is a warning.
+        # p95 > 500 ms is a violation of the 500 ms normalization SLA.
+        - alert: FlinkLatencyP95Warning
+          expr: |
+            histogram_quantile(0.95,
+              sum by (le, job_name) (
+                rate(flink_taskmanager_job_latency_source_id_operator_id_operator_subtask_index_bucket[1m])
+              )
+            ) > 400
+          for: 2m
+          labels:
+            severity: warning
+            subsystem: data_pipeline
+          annotations:
+            summary: "Flink p95 latency approaching SLA limit"
+            description: >
+              p95 end-to-end latency for job {{ $labels.job_name }} is
+              {{ $value | humanizeDuration }} (warning threshold 400 ms).
+              Requirement 1 C2 SLA is 500 ms. Investigate backpressure.
+
+        - alert: FlinkLatencyP95SLABreach
+          expr: |
+            histogram_quantile(0.95,
+              sum by (le, job_name) (
+                rate(flink_taskmanager_job_latency_source_id_operator_id_operator_subtask_index_bucket[1m])
+              )
+            ) > 500
+          for: 1m
+          labels:
+            severity: critical
+            subsystem: data_pipeline
+          annotations:
+            summary: "Flink p95 latency breaching 500 ms SLA"
+            description: >
+              p95 end-to-end latency for job {{ $labels.job_name }} exceeds
+              500 ms ({{ $value | humanizeDuration }}). Requirement 1 C2
+              normalization SLA is BREACHED. Check Kafka consumer lag and
+              TaskManager CPU/memory utilisation.
+
+    # ─── Throughput — Requirement 1 C6 (10,000 events/s) ────────────────────
+    - name: flink.throughput
+      interval: 30s
+      rules:
+        # Alert if Kafka consumer lag grows continuously (indicates TMs can't keep up)
+        - alert: FlinkKafkaConsumerLagGrowing
+          expr: |
+            increase(flink_taskmanager_job_task_operator_KafkaSourceReader_KafkaConsumer_records_lag_max[5m]) > 5000
+          for: 5m
+          labels:
+            severity: warning
+            subsystem: data_pipeline
+          annotations:
+            summary: "Flink Kafka consumer lag is growing"
+            description: >
+              Kafka consumer lag for job {{ $labels.job_name }} has grown by
+              more than 5,000 records in 5 minutes. Throughput (Req 1 C6:
+              10,000 events/s) may be degraded. Check TaskManager slot utilisation.
+
+    # ─── TaskManager Resources ────────────────────────────────────────────────
+    - name: flink.resources
+      interval: 30s
+      rules:
+        - alert: FlinkTaskManagerHeapHigh
+          expr: |
+            (flink_taskmanager_Status_JVM_Memory_Heap_Used /
+             flink_taskmanager_Status_JVM_Memory_Heap_Max) > 0.85
+          for: 5m
+          labels:
+            severity: warning
+            subsystem: data_pipeline
+          annotations:
+            summary: "Flink TaskManager JVM heap usage is high"
+            description: >
+              TaskManager {{ $labels.host }} heap usage is {{ $value | humanizePercentage }}.
+              Risk of GC pressure and OOM. Consider increasing
+              taskmanager.memory.process.size or reducing parallelism per slot.
+
+        - alert: FlinkJobManagerDown
+          expr: |
+            absent(flink_jobmanager_numRegisteredTaskManagers) == 1
+          for: 1m
+          labels:
+            severity: critical
+            subsystem: data_pipeline
+          annotations:
+            summary: "Flink JobManager is unreachable"
+            description: >
+              No Flink JobManager metrics received for 1 minute.
+              The stream processing cluster may be down. Check the
+              flink-jobmanager Deployment in the railos namespace.

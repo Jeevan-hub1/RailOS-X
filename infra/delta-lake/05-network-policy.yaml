@@ -1,0 +1,52 @@
+---
+# Delta Lake Init — NetworkPolicy
+#
+# Restricts egress from the delta-lake-init pod to only:
+#   - MinIO S3 API on port 9000 within the railos namespace
+#
+# No ingress is needed — the Job is a one-shot write client.
+#
+# Satisfies:
+#   - Design §2:     IEC 62443 zone isolation — RailOS Zone 2 components should not have
+#                    unrestricted egress to other zones
+#   - Req 39:        Pod Security hardening for all RailOS containers
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: delta-lake-init-netpol
+  namespace: railos
+  labels:
+    app.kubernetes.io/name: delta-lake-init
+    app.kubernetes.io/component: storage-init
+    app.kubernetes.io/part-of: railos-pilot
+spec:
+  podSelector:
+    matchLabels:
+      app: delta-lake-init
+  policyTypes:
+    - Egress
+    - Ingress
+
+  # No ingress — the init Job never serves requests
+  ingress: []
+
+  egress:
+    # Allow egress to MinIO S3 API only
+    - to:
+        - podSelector:
+            matchLabels:
+              app: minio
+      ports:
+        - protocol: TCP
+          port: 9000
+
+    # Allow DNS resolution (CoreDNS on port 53 UDP/TCP)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53

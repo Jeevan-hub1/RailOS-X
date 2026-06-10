@@ -1,0 +1,68 @@
+---
+# HashiCorp Vault — Kubernetes Services
+#
+# Two services:
+#   1. vault (ClusterIP, port 8200) — used by all RailOS services to read secrets
+#   2. vault-headless (headless)   — stable DNS for StatefulSet pod-0 cluster_addr
+#
+# The headless service provides a stable DNS entry for Raft cluster communication
+# (vault-0.vault-headless.railos.svc.cluster.local) even when only 1 replica is used.
+#
+# Satisfies:
+#   - Req 37:   Vault accessible to all RailOS services at vault.railos.svc.cluster.local:8200
+apiVersion: v1
+kind: Service
+metadata:
+  name: vault
+  namespace: railos
+  labels:
+    app.kubernetes.io/name: vault
+    app.kubernetes.io/component: secret-store
+    app.kubernetes.io/part-of: railos-pilot
+    app.kubernetes.io/version: "1.16"
+  annotations:
+    # Prometheus scrapes Vault telemetry at /v1/sys/metrics (unauthenticated, see vault.hcl)
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8200"
+    prometheus.io/path: "/v1/sys/metrics"
+    prometheus.io/scheme: "http"
+spec:
+  type: ClusterIP
+  selector:
+    app: vault
+  ports:
+    - name: vault-api
+      port: 8200
+      targetPort: 8200
+      protocol: TCP
+    - name: vault-cluster
+      port: 8201
+      targetPort: 8201
+      protocol: TCP
+
+---
+# Headless service — provides stable DNS for StatefulSet pods
+# Used by vault_addr and cluster_addr in vault.hcl
+apiVersion: v1
+kind: Service
+metadata:
+  name: vault-headless
+  namespace: railos
+  labels:
+    app.kubernetes.io/name: vault
+    app.kubernetes.io/component: secret-store-headless
+    app.kubernetes.io/part-of: railos-pilot
+spec:
+  type: ClusterIP
+  clusterIP: None    # Headless — no cluster IP, DNS resolves to pod IPs
+  selector:
+    app: vault
+  ports:
+    - name: vault-api
+      port: 8200
+      targetPort: 8200
+      protocol: TCP
+    - name: vault-cluster
+      port: 8201
+      targetPort: 8201
+      protocol: TCP

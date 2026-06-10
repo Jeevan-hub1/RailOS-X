@@ -1,0 +1,112 @@
+---
+# ClusterRole: Vault service account — read pods/nodes for Kubernetes auth method
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: railos-vault
+  labels:
+    app.kubernetes.io/name: vault
+    app.kubernetes.io/part-of: railos-pilot
+rules:
+  - apiGroups: [""]
+    resources: ["serviceaccounts/token"]
+    verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["pods", "nodes"]
+    verbs: ["get", "list"]
+  - apiGroups: ["authentication.k8s.io"]
+    resources: ["tokenreviews"]
+    verbs: ["create"]
+  - apiGroups: ["authorization.k8s.io"]
+    resources: ["localsubjectaccessreviews"]
+    verbs: ["create"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: railos-vault
+  labels:
+    app.kubernetes.io/name: vault
+    app.kubernetes.io/part-of: railos-pilot
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: railos-vault
+subjects:
+  - kind: ServiceAccount
+    name: vault
+    namespace: railos
+
+---
+# ClusterRole: Falco — needs read access to pods, nodes, namespaces for syscall attribution
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: railos-falco
+  labels:
+    app.kubernetes.io/name: falco
+    app.kubernetes.io/part-of: railos-pilot
+rules:
+  - apiGroups: [""]
+    resources: ["nodes", "namespaces", "pods", "replicationcontrollers",
+                "serviceaccounts", "endpoints", "events"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["daemonsets", "deployments", "replicasets", "statefulsets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["batch"]
+    resources: ["cronjobs", "jobs"]
+    verbs: ["get", "list", "watch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: railos-falco
+  labels:
+    app.kubernetes.io/name: falco
+    app.kubernetes.io/part-of: railos-pilot
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: railos-falco
+subjects:
+  - kind: ServiceAccount
+    name: falco
+    namespace: railos-system
+
+---
+# Role: allow RailOS services to read their own secrets and configmaps
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: railos-service-reader
+  namespace: railos
+  labels:
+    app.kubernetes.io/part-of: railos-pilot
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps", "secrets"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+
+---
+# RoleBinding: bind service-reader to the default SA in railos namespace
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: railos-service-reader
+  namespace: railos
+  labels:
+    app.kubernetes.io/part-of: railos-pilot
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: railos-service-reader
+subjects:
+  - kind: ServiceAccount
+    name: default
+    namespace: railos

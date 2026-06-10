@@ -1,0 +1,67 @@
+---
+# PostGIS Services — ClusterIP + Headless
+#
+# Two services:
+#   1. postgis          — ClusterIP on port 5432, used by Digital Twin services and
+#                         postgres_exporter ServiceMonitor.
+#   2. postgis-headless — Headless service for StatefulSet stable DNS (pod ordinal DNS).
+#
+# This is a single-instance StatefulSet (no replicas), so no primary/replica split
+# is needed. The ClusterIP service provides a stable virtual IP for client connections.
+#
+# Satisfies:
+#   - Design §7.1:  PostGIS accessibility by Digital Twin state store and GIS query layer
+#   - Req 17:       Prometheus scrape annotation for postgres_exporter sidecar
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgis
+  namespace: railos
+  labels:
+    app: postgis
+    app.kubernetes.io/name: postgis
+    app.kubernetes.io/component: spatial-database
+    app.kubernetes.io/part-of: railos-pilot
+  annotations:
+    # Prometheus scrape for postgres_exporter sidecar on port 9187
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "9187"
+    prometheus.io/path: "/metrics"
+spec:
+  type: ClusterIP
+  selector:
+    app: postgis
+  ports:
+    - name: postgresql
+      port: 5432
+      targetPort: postgresql
+      protocol: TCP
+    - name: pg-exporter
+      port: 9187
+      targetPort: pg-exporter
+      protocol: TCP
+
+---
+# Headless service — required by StatefulSet for stable pod DNS.
+# Pod DNS: postgis-0.postgis-headless.railos.svc.cluster.local
+# Even with a single replica, a headless service is best practice for StatefulSets
+# so that direct pod addressing works correctly.
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgis-headless
+  namespace: railos
+  labels:
+    app: postgis
+    app.kubernetes.io/name: postgis
+    app.kubernetes.io/component: spatial-database
+    app.kubernetes.io/part-of: railos-pilot
+spec:
+  clusterIP: None     # headless: DNS returns pod IPs, no virtual IP
+  selector:
+    app: postgis
+  ports:
+    - name: postgresql
+      port: 5432
+      targetPort: postgresql
+      protocol: TCP

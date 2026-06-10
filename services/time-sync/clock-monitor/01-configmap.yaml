@@ -1,0 +1,14 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: clock-monitor-config
+  namespace: railos
+  labels:
+    app.kubernetes.io/name: clock-monitor
+    app.kubernetes.io/part-of: railos-pilot
+data:
+  KAFKA_BOOTSTRAP_SERVERS: "railos-kafka-kafka-bootstrap.railos.svc.cluster.local:9092"
+  DRIFT_THRESHOLD_MS: "100"
+  POLL_INTERVAL_S: "1"
+  CLOCK_STATUS_PATH: "/tmp/railos_clock_reliable"

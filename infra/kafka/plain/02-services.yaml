@@ -1,0 +1,55 @@
+---
+# Headless Service — broker-to-broker communication and stable DNS per pod.
+# Each broker is reachable as:
+#   kafka-<ordinal>.kafka-headless.railos.svc.cluster.local:9092
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka-headless
+  namespace: railos
+  labels:
+    app: kafka
+    app.kubernetes.io/name: kafka
+    app.kubernetes.io/component: message-broker
+    app.kubernetes.io/part-of: railos-pilot
+spec:
+  clusterIP: None   # Headless — DNS returns individual pod IPs
+  publishNotReadyAddresses: true  # Needed for broker startup/election
+  selector:
+    app: kafka
+  ports:
+    - name: kafka
+      port: 9092
+      targetPort: 9092
+      protocol: TCP
+
+---
+# Client-facing Service — used by producers and consumers inside the cluster.
+# Bootstrap address: kafka.railos.svc.cluster.local:9092
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka
+  namespace: railos
+  labels:
+    app: kafka
+    app.kubernetes.io/name: kafka
+    app.kubernetes.io/component: message-broker
+    app.kubernetes.io/part-of: railos-pilot
+  annotations:
+    # Expose Prometheus metrics scrape endpoint
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "9404"
+spec:
+  type: ClusterIP
+  selector:
+    app: kafka
+  ports:
+    - name: kafka
+      port: 9092
+      targetPort: 9092
+      protocol: TCP
+    - name: jmx-exporter
+      port: 9404
+      targetPort: 9404
+      protocol: TCP

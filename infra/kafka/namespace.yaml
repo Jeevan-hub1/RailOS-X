@@ -1,0 +1,10 @@
+---
+# Namespace for the entire RailOS Tier 4 Central Core workloads.
+# All Kafka brokers, topics, and related services live here.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: railos
+  labels:
+    app.kubernetes.io/part-of: railos-pilot
+    environment: production

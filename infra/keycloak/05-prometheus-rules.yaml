@@ -1,0 +1,251 @@
+---
+# PrometheusRule — Keycloak Identity Provider Alerts
+#
+# Monitors:
+#   1. Keycloak pod availability (up/down)
+#   2. Login failure rate (brute-force / credential stuffing detection)
+#   3. TOTP / MFA enrollment rate (governance — all privileged users must enroll)
+#   4. Token issuance latency (downstream impact on Kong JWT validation)
+#
+# Keycloak 24 exposes metrics at :9000/metrics (--metrics-enabled=true).
+# The metric names follow the Keycloak Micrometer / Quarkus conventions.
+#
+# Satisfies:
+#   - Design §9.1:  TOTP MFA monitoring; privileged role enforcement
+#   - Design §8:    Observability stack — Prometheus + Alertmanager (Req 17, Req 25)
+#   - Req 9 C2:     Security anomaly detection pathway (login failure spike)
+#   - Req 23:       IdP availability is a hard dependency for all API access
+#
+# Assumes Prometheus Operator is deployed and watching PrometheusRule CRDs.
+# If using plain Prometheus, copy the 'groups' block into your prometheus.rules.yaml.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: keycloak-alerts
+  namespace: railos
+  labels:
+    app: keycloak
+    app.kubernetes.io/name: keycloak
+    app.kubernetes.io/component: monitoring
+    app.kubernetes.io/part-of: railos-pilot
+    # Label required by Prometheus Operator to pick up this rule
+    prometheus: railos-prometheus
+    role: alert-rules
+spec:
+  groups:
+
+    # ─── Availability ──────────────────────────────────────────────────────────
+    - name: keycloak.availability
+      interval: 30s
+      rules:
+        # Keycloak pod is down — all JWT-authenticated API calls will fail
+        - alert: KeycloakDown
+          expr: |
+            kube_pod_status_ready{
+              namespace="railos",
+              pod=~"keycloak-.*",
+              condition="true"
+            } == 0
+          for: 1m
+          labels:
+            severity: critical
+            team: security
+            subsystem: keycloak
+            requirement: "REQ-23-24"
+          annotations:
+            summary: "Keycloak identity provider pod is not ready"
+            description: >
+              Keycloak pod {{ $labels.pod }} in namespace {{ $labels.namespace }} is not in
+              Ready state. All Kong JWT validation will fail, blocking every authenticated
+              API call to RailOS services.
+              Check: kubectl describe pod {{ $labels.pod }} -n railos
+              Check: kubectl logs {{ $labels.pod }} -n railos --previous
+            runbook_url: "https://wiki.railos.internal/runbooks/keycloak-down"
+
+        # Keycloak metrics endpoint not reachable (scrape failure)
+        - alert: KeycloakMetricsEndpointDown
+          expr: |
+            up{job="keycloak", namespace="railos"} == 0
+          for: 2m
+          labels:
+            severity: warning
+            team: security
+            subsystem: keycloak
+          annotations:
+            summary: "Keycloak metrics endpoint is unreachable"
+            description: >
+              Prometheus cannot scrape Keycloak metrics from {{ $labels.instance }}.
+              This may indicate the pod is unhealthy or the management port (9000) is
+              blocked. TOTP and login failure alerts will not fire while this is down.
+            runbook_url: "https://wiki.railos.internal/runbooks/keycloak-metrics-down"
+
+    # ─── Authentication / Security ─────────────────────────────────────────────
+    - name: keycloak.security
+      interval: 30s
+      rules:
+        # Elevated login failure rate — potential credential stuffing or brute force
+        # Fires when more than 10 login errors occur per minute over a 5-minute window.
+        # Keycloak metric: keycloak_event_user_total{realm="railos", event="LOGIN_ERROR"}
+        - alert: KeycloakLoginFailureRateHigh
+          expr: |
+            rate(
+              keycloak_event_user_total{
+                realm="railos",
+                event="LOGIN_ERROR"
+              }[5m]
+            ) * 60 > 10
+          for: 2m
+          labels:
+            severity: warning
+            team: security
+            subsystem: keycloak
+            requirement: "REQ-9"
+          annotations:
+            summary: "Keycloak login failure rate is elevated (> 10/min)"
+            description: >
+              Keycloak realm 'railos' is recording more than 10 login errors per minute
+              (current rate: {{ $value | humanize }}/min).
+              This may indicate a brute-force or credential stuffing attack.
+              Review: Keycloak Admin Console → Events → Login Events → filter LOGIN_ERROR
+              Cross-reference with security.anomalies Kafka topic for correlated SCADA anomalies.
+            runbook_url: "https://wiki.railos.internal/runbooks/keycloak-login-failures"
+
+        # Critical: sustained high login failure rate — likely active attack
+        - alert: KeycloakLoginFailureRateCritical
+          expr: |
+            rate(
+              keycloak_event_user_total{
+                realm="railos",
+                event="LOGIN_ERROR"
+              }[5m]
+            ) * 60 > 50
+          for: 1m
+          labels:
+            severity: critical
+            team: security
+            subsystem: keycloak
+            pagerduty: "true"
+            requirement: "REQ-9"
+          annotations:
+            summary: "CRITICAL: Keycloak login failure rate exceeds 50/min — likely active attack"
+            description: >
+              Keycloak realm 'railos' is recording more than 50 login errors per minute
+              (current rate: {{ $value | humanize }}/min).
+              Brute-force protection is active (lockout after 5 failures / 12h window)
+              but this volume suggests a distributed credential stuffing campaign.
+              Immediate action required: notify Security_Officer, review IP blocks.
+            runbook_url: "https://wiki.railos.internal/runbooks/keycloak-login-attack"
+
+        # Account lockout rate — Keycloak brute-force protection is triggering
+        - alert: KeycloakAccountLockoutRateHigh
+          expr: |
+            rate(
+              keycloak_event_user_total{
+                realm="railos",
+                event="USER_DISABLED_BY_PERMANENT_LOCKOUT"
+              }[15m]
+            ) * 60 > 2
+          for: 5m
+          labels:
+            severity: warning
+            team: security
+            subsystem: keycloak
+          annotations:
+            summary: "Keycloak accounts are being locked out at elevated rate"
+            description: >
+              More than 2 accounts per minute are being permanently locked out in realm
+              'railos' due to repeated login failures. This may indicate targeted attacks
+              against specific operator accounts.
+              Review Keycloak Admin Console and cross-check with on-call roster.
+            runbook_url: "https://wiki.railos.internal/runbooks/keycloak-lockouts"
+
+    # ─── TOTP / MFA ────────────────────────────────────────────────────────────
+    - name: keycloak.mfa
+      interval: 60s
+      rules:
+        # Alert when TOTP is removed from an account in the railos realm.
+        # Legitimate removals should be rare and auditable.
+        # Keycloak metric: keycloak_event_user_total{realm="railos", event="REMOVE_TOTP"}
+        - alert: KeycloakTOTPRemovedFromAccount
+          expr: |
+            increase(
+              keycloak_event_user_total{
+                realm="railos",
+                event="REMOVE_TOTP"
+              }[1h]
+            ) > 0
+          for: 0m
+          labels:
+            severity: warning
+            team: security
+            subsystem: keycloak
+            requirement: "REQ-23"
+          annotations:
+            summary: "TOTP credential removed from a Keycloak account in realm 'railos'"
+            description: >
+              A TOTP credential was removed from at least one account in realm 'railos'
+              in the last hour. All privileged role accounts (Operations_Controller,
+              Security_Officer, Engineering_Team, Governance_Officer) require TOTP MFA.
+              If this removal was not authorized, the affected account may be compromised.
+              Review: Keycloak Admin Console → Events → filter REMOVE_TOTP
+            runbook_url: "https://wiki.railos.internal/runbooks/keycloak-totp-removed"
+
+    # ─── Token Issuance / Latency ──────────────────────────────────────────────
+    - name: keycloak.performance
+      interval: 30s
+      rules:
+        # Token endpoint P95 latency exceeding 1 second will cause Kong plugin
+        # timeouts and degrade API gateway JWT validation performance.
+        # Keycloak metric: http_server_requests_seconds (Micrometer/Quarkus)
+        - alert: KeycloakTokenEndpointLatencyHigh
+          expr: |
+            histogram_quantile(0.95,
+              rate(
+                http_server_requests_seconds_bucket{
+                  job="keycloak",
+                  namespace="railos",
+                  uri="/realms/railos/protocol/openid-connect/token"
+                }[5m]
+              )
+            ) > 1.0
+          for: 5m
+          labels:
+            severity: warning
+            team: security
+            subsystem: keycloak
+            requirement: "REQ-24"
+          annotations:
+            summary: "Keycloak token endpoint P95 latency exceeds 1 second"
+            description: >
+              The Keycloak token endpoint /realms/railos/protocol/openid-connect/token
+              has a P95 response time of {{ $value | humanizeDuration }}.
+              This will cause Kong JWT plugin delays and may violate the API gateway
+              latency SLA (Design §9.2). Investigate database query performance
+              or connection pool exhaustion on the Patroni primary.
+            runbook_url: "https://wiki.railos.internal/runbooks/keycloak-token-latency"
+
+        # JWKS endpoint latency — Kong fetches JWKS for RS256 key rotation
+        - alert: KeycloakJWKSEndpointLatencyHigh
+          expr: |
+            histogram_quantile(0.95,
+              rate(
+                http_server_requests_seconds_bucket{
+                  job="keycloak",
+                  namespace="railos",
+                  uri="/realms/railos/protocol/openid-connect/certs"
+                }[5m]
+              )
+            ) > 0.5
+          for: 5m
+          labels:
+            severity: warning
+            team: security
+            subsystem: keycloak
+            requirement: "REQ-24"
+          annotations:
+            summary: "Keycloak JWKS endpoint P95 latency exceeds 500ms"
+            description: >
+              The JWKS endpoint /realms/railos/protocol/openid-connect/certs is responding
+              slowly (P95: {{ $value | humanizeDuration }}). Kong caches JWKS keys but
+              re-fetches on key rotation — slow JWKS responses delay key rotation handling.
+            runbook_url: "https://wiki.railos.internal/runbooks/keycloak-jwks-latency"

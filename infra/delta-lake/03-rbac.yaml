@@ -1,0 +1,20 @@
+---
+# Delta Lake Init — RBAC
+#
+# Provides a dedicated ServiceAccount for the delta-lake-init Job so that the
+# pod does not run under the default ServiceAccount, following least-privilege
+# principles (Req 39 / Design §9.3).
+#
+# The Job only needs to contact MinIO via network (no Kubernetes API access
+# required), so no ClusterRole or Role is bound.  The ServiceAccount token is
+# still rotated by Kubernetes automatically.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: delta-lake-init
+  namespace: railos
+  labels:
+    app.kubernetes.io/name: delta-lake-init
+    app.kubernetes.io/component: storage-init
+    app.kubernetes.io/part-of: railos-pilot
+automountServiceAccountToken: false

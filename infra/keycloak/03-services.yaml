@@ -1,0 +1,82 @@
+---
+# Keycloak Services
+#
+# Two services:
+#   1. keycloak          — ClusterIP on port 8080 (HTTP) + 8443 (HTTPS management)
+#      Used by Kong API Gateway for JWKS endpoint and token introspection,
+#      and by internal services for client-credentials token requests.
+#      JWKS endpoint: http://keycloak.railos.svc.cluster.local:8080/realms/railos/protocol/openid-connect/certs
+#
+#   2. keycloak-headless — Headless service for StatefulSet pod DNS resolution.
+#      Pod DNS: keycloak-0.keycloak-headless.railos.svc.cluster.local:8080
+#      Used by Keycloak's Infinispan distributed cache (cluster member discovery)
+#      when scaling beyond single replica.
+#
+# Satisfies:
+#   - Design §9.1:  Keycloak IdP reachable by Kong and internal services
+#   - Design §9.2:  Kong JWT plugin fetches JWKS from keycloak:8080/realms/railos/...
+#   - Req 23/24:    JWT validation for all API Gateway routes
+apiVersion: v1
+kind: Service
+metadata:
+  name: keycloak
+  namespace: railos
+  labels:
+    app: keycloak
+    app.kubernetes.io/name: keycloak
+    app.kubernetes.io/component: identity-provider
+    app.kubernetes.io/part-of: railos-pilot
+  annotations:
+    # Keycloak exposes Prometheus metrics at /metrics (requires metrics extension
+    # or Keycloak 22+ built-in /metrics endpoint)
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8080"
+    prometheus.io/path: "/metrics"
+spec:
+  type: ClusterIP
+  selector:
+    app: keycloak
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP
+    # Management port — exposes /health and /metrics in Keycloak 22+
+    - name: management
+      port: 9000
+      targetPort: management
+      protocol: TCP
+
+---
+# Headless service — required by StatefulSet for stable DNS-based pod addressing.
+# Keycloak 24 uses Infinispan JGroups with DNS_PING for cluster member discovery.
+# When replicas > 1, pods discover each other via DNS lookup on this service.
+apiVersion: v1
+kind: Service
+metadata:
+  name: keycloak-headless
+  namespace: railos
+  labels:
+    app: keycloak
+    app.kubernetes.io/name: keycloak
+    app.kubernetes.io/component: identity-provider
+    app.kubernetes.io/part-of: railos-pilot
+spec:
+  clusterIP: None   # Headless: returns pod IPs directly, no virtual IP
+  publishNotReadyAddresses: true   # Required for Infinispan cluster formation
+  selector:
+    app: keycloak
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP
+    - name: management
+      port: 9000
+      targetPort: management
+      protocol: TCP
+    # Infinispan JGroups cluster communication port
+    - name: jgroups
+      port: 7800
+      targetPort: jgroups
+      protocol: TCP

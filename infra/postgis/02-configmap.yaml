@@ -1,0 +1,254 @@
+---
+# PostGIS ConfigMap — postgresql.conf tuning + init.sql for Digital Twin spatial DB
+#
+# Contents:
+#   postgresql.conf  — performance tuning for spatial workloads
+#   init.sql         — database bootstrap: creates railos_spatial DB, enables PostGIS,
+#                      creates asset_registry and track_segments tables with GIST indexes
+#
+# Design §7.1 Layer A: asset_registry with spatial columns (POINT, LINESTRING, EPSG:4326)
+# Design §7.1 Layer B: PostGIS for nearest-asset queries and track segment geometry
+#
+# Satisfies:
+#   - Design §7.1:  PostGIS backend for Digital Twin geospatial layer
+#   - Req 8 C1/C3:  spatial data backing real-time train position + defect location rendering
+#   - Req 4 C2:     asset_id in MAINTENANCE_ADVISORY maps to asset_registry
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgis-config
+  namespace: railos
+  labels:
+    app: postgis
+    app.kubernetes.io/name: postgis
+    app.kubernetes.io/component: spatial-database
+    app.kubernetes.io/part-of: railos-pilot
+data:
+  # ─── postgresql.conf — tuned for spatial query workloads ────────────────────
+  # Mounted at /etc/postgresql/postgresql.conf via initContainer.
+  # Key tuning rationale:
+  #   shared_buffers      = 512MB  — cache hot spatial index pages in RAM
+  #   work_mem            = 64MB   — PostGIS geometry operations are memory-intensive;
+  #                                  higher work_mem reduces spill-to-disk on spatial sorts
+  #   maintenance_work_mem = 256MB — speeds up GIST index builds and VACUUM
+  #   effective_cache_size = 1536MB — tells planner how much OS page cache is available
+  #   max_connections     = 50     — single-instance spatial DB; Digital Twin services use
+  #                                  a small pool; 50 is sufficient headroom
+  #   wal_level           = replica — enables pg_basebackup if a replica is added later
+  #   checkpoint_completion_target = 0.9 — spread checkpoint writes to reduce I/O spikes
+  postgresql.conf: |
+    # ── Connection ────────────────────────────────────────────────────────────
+    listen_addresses = '*'
+    port = 5432
+    max_connections = 50
+
+    # ── Memory — tuned for spatial workloads ──────────────────────────────────
+    # PostGIS geometry operations allocate per-sort work buffers.
+    # With max_connections=50 and typical 3-5 concurrent spatial queries:
+    #   peak RAM from work_mem ≈ 5 × 64 MB = 320 MB (well within 2 Gi container limit)
+    shared_buffers = 512MB
+    work_mem = 64MB
+    maintenance_work_mem = 256MB
+    effective_cache_size = 1536MB
+
+    # ── WAL / Checkpoints ─────────────────────────────────────────────────────
+    wal_level = replica
+    wal_buffers = 16MB
+    checkpoint_completion_target = 0.9
+    max_wal_size = 2GB
+    min_wal_size = 256MB
+
+    # ── Planner ───────────────────────────────────────────────────────────────
+    random_page_cost = 1.1           # SSD: random I/O is close to sequential
+    effective_io_concurrency = 200   # SSD: allow many concurrent I/O requests
+
+    # ── Logging ───────────────────────────────────────────────────────────────
+    log_destination = 'stderr'
+    logging_collector = off          # Docker/Kubernetes log driver captures stderr
+    log_min_duration_statement = 1000  # log queries taking > 1s (spatial perf monitoring)
+    log_connections = on
+    log_disconnections = on
+    log_line_prefix = '%t [%p]: [%l-1] user=%u,db=%d,app=%a,client=%h '
+
+    # ── Locale ────────────────────────────────────────────────────────────────
+    datestyle = 'iso, mdy'
+    timezone = 'UTC'
+    lc_messages = 'en_US.utf8'
+    lc_monetary = 'en_US.utf8'
+    lc_numeric = 'en_US.utf8'
+    lc_time = 'en_US.utf8'
+    default_text_search_config = 'pg_catalog.english'
+
+  # ─── init.sh — database bootstrap ──────────────────────────────────────────
+  # Shell script executed once on first startup by docker-entrypoint-initdb.d.
+  # Using a .sh script (not .sql) so we can:
+  #   a) safely call CREATE DATABASE outside a transaction (required by PostgreSQL)
+  #   b) read SPATIAL_USER_PASSWORD from the environment variable injected by the
+  #      StatefulSet (avoids embedding passwords in SQL strings)
+  #
+  # The postgis/postgis Docker image runs all files in /docker-entrypoint-initdb.d/
+  # in alphabetical order. Shell scripts are executed as bash -e.
+  #
+  # Steps:
+  #   1. Create the railos_spatial application role with password from env
+  #   2. Create the railos_spatial database owned by railos_spatial
+  #   3. Enable PostGIS, postgis_topology, uuid-ossp extensions
+  #   4. Create asset_registry table with GEOMETRY columns (POINT + LINESTRING, EPSG:4326)
+  #   5. Create GIST spatial indexes on both geometry columns
+  #   6. Create track_segments table with GIST index on line_geometry
+  #   7. Grant appropriate privileges to railos_spatial role
+  init.sh: |
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    # SPATIAL_USER_PASSWORD is injected from postgis-secrets via the StatefulSet env block.
+    # Fail loudly if it is not set — better to crash than to create a passwordless role.
+    if [[ -z "${SPATIAL_USER_PASSWORD:-}" ]]; then
+      echo "ERROR: SPATIAL_USER_PASSWORD is not set. Cannot create railos_spatial role." >&2
+      exit 1
+    fi
+
+    echo "==> PostGIS init: creating railos_spatial role and database"
+
+    # ── Step 1: Create application role ────────────────────────────────────────
+    # psql -v ON_ERROR_STOP=1 ensures the script aborts on any SQL error.
+    psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname postgres <<-EOSQL
+      DO \$\$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'railos_spatial') THEN
+          CREATE ROLE railos_spatial LOGIN PASSWORD '${SPATIAL_USER_PASSWORD}';
+          RAISE NOTICE 'Role railos_spatial created.';
+        ELSE
+          RAISE NOTICE 'Role railos_spatial already exists, skipping.';
+        END IF;
+      END
+      \$\$;
+    EOSQL
+
+    # ── Step 2: Create database ─────────────────────────────────────────────────
+    # CREATE DATABASE cannot run inside a transaction block; psql runs it as a
+    # standalone statement here.
+    psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname postgres <<-EOSQL
+      SELECT 'CREATE DATABASE railos_spatial
+                OWNER     railos_spatial
+                ENCODING  ''UTF8''
+                LC_COLLATE ''en_US.UTF-8''
+                LC_CTYPE   ''en_US.UTF-8''
+                TEMPLATE  template0'
+      WHERE NOT EXISTS (
+        SELECT 1 FROM pg_database WHERE datname = 'railos_spatial'
+      ) \gexec
+    EOSQL
+
+    echo "==> PostGIS init: enabling PostGIS extensions in railos_spatial"
+
+    # ── Steps 3–7: Extensions + schema in railos_spatial ───────────────────────
+    psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname railos_spatial <<-EOSQL
+
+      -- Step 3: Enable PostGIS extension
+      -- PostGIS is pre-installed in the postgis:15-3.4 image.
+      CREATE EXTENSION IF NOT EXISTS postgis;
+      CREATE EXTENSION IF NOT EXISTS postgis_topology;
+      CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+
+      -- Step 4: asset_registry table
+      -- Design §7.1 Layer A:
+      --   SELECT assetId, type, location_geojson, spec_version, maintenance_history
+      --
+      -- Columns:
+      --   asset_id     UUID PK
+      --   asset_type   TEXT  — track_segment | bridge | tunnel | station | …
+      --   name         TEXT  — human-readable asset name
+      --   location     GEOMETRY(POINT,4326)      — GPS point (EPSG:4326 WGS84)
+      --   geometry     GEOMETRY(LINESTRING,4326) — linear extent (track run, tunnel)
+      --   spec_version TEXT  — IFC 4.x BIM version reference
+      --   zone         TEXT  — IEC 62443 / geographic zone identifier
+      --   metadata     JSONB — extensible key-value properties
+      --   created_at   TIMESTAMPTZ
+      --   updated_at   TIMESTAMPTZ
+      CREATE TABLE IF NOT EXISTS asset_registry (
+        asset_id          UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
+        asset_type        TEXT        NOT NULL
+                            CHECK (asset_type IN (
+                              'track_segment', 'bridge', 'tunnel', 'station',
+                              'locomotive', 'bogie', 'sensor', 'rfid_reader',
+                              'camera', 'edge_node', 'other'
+                            )),
+        name              TEXT        NOT NULL,
+        location          GEOMETRY(POINT, 4326),
+        geometry          GEOMETRY(LINESTRING, 4326),
+        spec_version      TEXT,
+        zone              TEXT,
+        metadata          JSONB,
+        created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+
+      -- Step 5: GIST spatial indexes on asset_registry
+      -- Accelerates ST_DWithin, ST_Intersects, KNN (<->) queries.
+      -- Design §7.1 Layer B: nearest-asset-to-GPS-coordinate queries.
+      CREATE INDEX IF NOT EXISTS idx_asset_registry_location_gist
+        ON asset_registry USING GIST (location);
+
+      CREATE INDEX IF NOT EXISTS idx_asset_registry_geometry_gist
+        ON asset_registry USING GIST (geometry);
+
+      -- Supporting B-tree indexes for non-spatial filters
+      CREATE INDEX IF NOT EXISTS idx_asset_registry_asset_type
+        ON asset_registry (asset_type);
+
+      CREATE INDEX IF NOT EXISTS idx_asset_registry_zone
+        ON asset_registry (zone);
+
+      -- Trigger: auto-update updated_at on row modification
+      CREATE OR REPLACE FUNCTION asset_registry_set_updated_at()
+        RETURNS TRIGGER LANGUAGE plpgsql AS \$func\$
+      BEGIN
+        NEW.updated_at = now();
+        RETURN NEW;
+      END;
+      \$func\$;
+
+      CREATE OR REPLACE TRIGGER trg_asset_registry_updated_at
+        BEFORE UPDATE ON asset_registry
+        FOR EACH ROW EXECUTE FUNCTION asset_registry_set_updated_at();
+
+      -- Step 6: track_segments table
+      -- Design §7.1 Layer B: track topology graph; one row per directed segment.
+      --
+      -- Columns:
+      --   segment_id            UUID PK
+      --   line_geometry         GEOMETRY(LINESTRING,4326) — segment path (NOT NULL)
+      --   zone                  TEXT  — geographic zone identifier
+      --   speed_limit_kmh       INT   — maximum permitted speed
+      --   max_concurrent_trains INT   — capacity limit (Design §7.3 state conflict detector)
+      --   metadata              JSONB — gradient, track class, electrification, etc.
+      CREATE TABLE IF NOT EXISTS track_segments (
+        segment_id            UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
+        line_geometry         GEOMETRY(LINESTRING, 4326) NOT NULL,
+        zone                  TEXT,
+        speed_limit_kmh       INT         CHECK (speed_limit_kmh > 0),
+        max_concurrent_trains INT         NOT NULL DEFAULT 1
+                                CHECK (max_concurrent_trains >= 1),
+        metadata              JSONB
+      );
+
+      -- Step 7: GIST index on track_segments.line_geometry
+      -- Accelerates: segment-intersects-bbox, nearest-segment-to-GPS queries.
+      CREATE INDEX IF NOT EXISTS idx_track_segments_line_geometry_gist
+        ON track_segments USING GIST (line_geometry);
+
+      CREATE INDEX IF NOT EXISTS idx_track_segments_zone
+        ON track_segments (zone);
+
+      -- Step 8: Grant privileges to railos_spatial application role
+      GRANT USAGE ON SCHEMA public TO railos_spatial;
+      GRANT SELECT, INSERT, UPDATE ON asset_registry  TO railos_spatial;
+      GRANT SELECT, INSERT, UPDATE ON track_segments  TO railos_spatial;
+      GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO railos_spatial;
+      GRANT SELECT ON geometry_columns TO railos_spatial;
+      GRANT SELECT ON spatial_ref_sys  TO railos_spatial;
+
+    EOSQL
+
+    echo "==> PostGIS init complete: railos_spatial database ready with spatial schema."

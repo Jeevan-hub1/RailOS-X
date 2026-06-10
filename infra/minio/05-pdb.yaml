@@ -1,0 +1,25 @@
+---
+# MinIO PodDisruptionBudget
+#
+# Ensures that voluntary disruptions (node drain, rolling upgrades) do not
+# take down more than 1 MinIO pod simultaneously.  With EC:2 erasure coding
+# across 4 nodes, the cluster can survive the loss of 2 nodes and still serve
+# reads.  Limiting voluntary disruptions to 1 pod at a time keeps quorum safe.
+#
+# Satisfies:
+#   - Design §10.1:  HA configuration for object store
+#   - Req 15/16:     Availability during planned maintenance
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: minio-pdb
+  namespace: railos
+  labels:
+    app.kubernetes.io/name: minio
+    app.kubernetes.io/component: object-store
+    app.kubernetes.io/part-of: railos-pilot
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: minio

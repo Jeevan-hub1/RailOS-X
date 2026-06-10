@@ -1,0 +1,92 @@
+---
+# RailOS Delta Lake — Table Initialization Job
+#
+# Run once after MinIO bucket railos-delta-lake has been created (Task 1.10).
+# Creates all Delta tables with correct schemas and partition layouts.
+# Safe to re-run: uses .mode("ignore") — no-op if tables already exist.
+#
+# Deploy:
+#   kubectl apply -f 03-init-job.yaml -n railos
+#   kubectl wait --for=condition=complete job/delta-lake-init -n railos --timeout=300s
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: delta-lake-init
+  namespace: railos
+  labels:
+    app.kubernetes.io/name: delta-lake-init
+    app.kubernetes.io/component: init-job
+    app.kubernetes.io/part-of: railos-pilot
+spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: 600    # 10-minute hard timeout
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: delta-lake-init
+        app.kubernetes.io/part-of: railos-pilot
+    spec:
+      restartPolicy: OnFailure
+
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+
+      containers:
+        - name: delta-init
+          image: railos/delta-init:1.0.0
+          imagePullPolicy: IfNotPresent
+
+          env:
+            - name: MINIO_ENDPOINT
+              valueFrom:
+                configMapKeyRef:
+                  name: delta-lake-config
+                  key: MINIO_ENDPOINT
+            - name: DELTA_BUCKET
+              valueFrom:
+                configMapKeyRef:
+                  name: delta-lake-config
+                  key: DELTA_BUCKET
+            - name: MINIO_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: delta-lake-minio-creds
+                  key: MINIO_ACCESS_KEY
+            - name: MINIO_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: delta-lake-minio-creds
+                  key: MINIO_SECRET_KEY
+
+          resources:
+            requests:
+              cpu: "1000m"
+              memory: "2Gi"
+            limits:
+              cpu: "4000m"
+              memory: "6Gi"
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: false   # Spark needs to write temp files
+
+          volumeMounts:
+            - name: spark-defaults
+              mountPath: /opt/spark/conf/spark-defaults.conf
+              subPath: spark-defaults.conf
+            - name: spark-tmp
+              mountPath: /tmp
+
+      volumes:
+        - name: spark-defaults
+          configMap:
+            name: delta-lake-config
+            items:
+              - key: spark-defaults.conf
+                path: spark-defaults.conf
+        - name: spark-tmp
+          emptyDir: {}

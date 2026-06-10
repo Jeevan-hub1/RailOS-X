@@ -1,0 +1,29 @@
+---
+# PodDisruptionBudget for PostgreSQL Patroni cluster
+#
+# maxUnavailable=1 guarantees that at most one pod is voluntarily evicted
+# at a time during cluster operations (node drain, rolling upgrades, etc.).
+# With 3 pods, this leaves 2 pods running — sufficient for Patroni quorum
+# and for PostgreSQL streaming replication to remain healthy.
+#
+# This does NOT protect against involuntary disruptions (node failures);
+# those are handled by Patroni's automatic failover logic.
+#
+# Satisfies:
+#   - Requirement 15/16: maintain HA during maintenance operations
+#   - Design §10.1:      Patroni HA (primary + 2 replicas) availability guarantee
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: postgresql-patroni-pdb
+  namespace: railos
+  labels:
+    app: postgresql-patroni
+    app.kubernetes.io/name: postgresql-patroni
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: railos-pilot
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: postgresql-patroni

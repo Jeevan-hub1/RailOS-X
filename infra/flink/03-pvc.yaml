@@ -1,0 +1,45 @@
+---
+# Flink Checkpoint PersistentVolumeClaim
+#
+# Provides durable storage for:
+#   - Flink state backend checkpoints   (/flink/checkpoints/state)
+#   - Kubernetes-native HA metadata     (/flink/checkpoints/ha)
+#   - Savepoints                        (/flink/checkpoints/savepoints)
+#
+# For S3-backed checkpointing (recommended for production), set:
+#   state.checkpoints.dir: s3://your-bucket/railos/flink/checkpoints
+# in 01-configmap.yaml and remove this PVC. The RocksDB state will then
+# be pushed directly to S3 on each checkpoint interval.
+#
+# Satisfies:
+#   - Requirement 1 C2:  Checkpoint interval 10 s (state backend must persist)
+#   - Requirement 15/16: Checkpoint storage survives JobManager pod restarts
+#   - Design §4.2:       Flink cluster persistent state
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: flink-checkpoints
+  namespace: railos
+  labels:
+    app: flink
+    app.kubernetes.io/name: flink
+    app.kubernetes.io/component: checkpoint-storage
+    app.kubernetes.io/part-of: railos-pilot
+  annotations:
+    description: >
+      Shared PVC for Flink checkpoint state, savepoints, and Kubernetes-native HA
+      metadata. Mounted read-write on the JobManager pod; TaskManagers write
+      checkpoints via the Flink CheckpointCoordinator (not mounted directly).
+spec:
+  accessModes:
+    - ReadWriteOnce
+  # Replace 'standard' with your cluster's SSD-backed storage class.
+  # Recommended: gp3 (AWS EKS), premium-rwo (GKE), managed-premium (AKS)
+  # For multi-zone clusters use ReadWriteMany with a supported StorageClass (e.g. NFS, EFS).
+  storageClassName: standard
+  resources:
+    requests:
+      # 100 Gi accommodates 3 retained incremental RocksDB checkpoints for a
+      # 12-parallelism job with ~30 GB state (sensor feature windows, stream joins).
+      # Increase if Delta Lake sink state grows significantly.
+      storage: 100Gi

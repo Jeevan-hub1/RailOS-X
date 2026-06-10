@@ -1,0 +1,259 @@
+---
+# MinIO Distributed StatefulSet — 4 Nodes
+#
+# Deploys MinIO in distributed erasure-coding mode across 4 pods, each with
+# one PVC (one drive per pod).  This is the minimum configuration required for:
+#   - Object Lock / WORM support (requires distributed mode, not single-node)
+#   - EC:2 erasure coding (2 parity drives, survives loss of 2 nodes with read quorum)
+#   - High availability for archive writes from Flink
+#
+# For single-node development, see the README for a single-pod override.
+#
+# Volume layout per pod:
+#   /data  — single 1 Ti drive, part of the distributed erasure set
+#   MinIO uses the URL pattern:
+#     http://minio-{0...3}.minio-headless.railos.svc.cluster.local:9000/data
+#
+# Satisfies:
+#   - Design §4.2:   S3-compatible object store for Flink → Delta Lake (Parquet)
+#   - Design §9.5:   MinIO Object Lock / WORM for forensic evidence bucket (Req 26)
+#   - Req 1 C4:      Long-term archive after InfluxDB 90-day expiry
+#   - Design §10.4:  Delta Lake cold storage tier
+#   - Req 39:        Pod Security restricted profile
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: minio
+  namespace: railos
+  labels:
+    app: minio
+    app.kubernetes.io/name: minio
+    app.kubernetes.io/component: object-store
+    app.kubernetes.io/part-of: railos-pilot
+    app.kubernetes.io/version: "RELEASE.2024-06-04T19-20-08Z"
+spec:
+  serviceName: minio-headless
+  replicas: 4
+  updateStrategy:
+    type: RollingUpdate
+  podManagementPolicy: Parallel   # All pods start simultaneously for cluster formation
+  selector:
+    matchLabels:
+      app: minio
+
+  template:
+    metadata:
+      labels:
+        app: minio
+        app.kubernetes.io/name: minio
+        app.kubernetes.io/component: object-store
+        app.kubernetes.io/part-of: railos-pilot
+      annotations:
+        # Prometheus scrape — MinIO metrics endpoint (Req 17)
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9000"
+        prometheus.io/path: "/minio/v2/metrics/cluster"
+
+    spec:
+      # ─── Security Context ──────────────────────────────────────────────────
+      # Restricted Pod Security Admission profile (Req 39 / Design §9.3)
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+
+      # ─── Anti-Affinity: spread pods across nodes ───────────────────────────
+      # Object Lock / erasure coding requires pods on different nodes so that
+      # a single node failure does not compromise the erasure set.
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchExpressions:
+                  - key: app
+                    operator: In
+                    values:
+                      - minio
+              topologyKey: kubernetes.io/hostname
+
+      terminationGracePeriodSeconds: 30
+
+      # ─── Init Container: fix PVC ownership ────────────────────────────────
+      initContainers:
+        - name: minio-init-dirs
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              echo "Setting ownership on /data..."
+              chown -R 1000:1000 /data
+              echo "Done."
+          volumeMounts:
+            - name: minio-data
+              mountPath: /data
+          securityContext:
+            runAsUser: 0
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+              add: ["CHOWN", "DAC_OVERRIDE"]
+
+      containers:
+        - name: minio
+          # Use a specific release tag — never :latest in production
+          image: quay.io/minio/minio:RELEASE.2024-06-04T19-20-08Z
+          imagePullPolicy: IfNotPresent
+
+          command:
+            - minio
+            - server
+            # Distributed mode: reference all 4 pods by their stable DNS names.
+            # The {0...3} expansion is interpreted by MinIO, not by the shell.
+            - http://minio-{0...3}.minio-headless.railos.svc.cluster.local:9000/data
+            - --console-address
+            - ":9001"
+
+          ports:
+            - name: s3-api
+              containerPort: 9000
+              protocol: TCP
+            - name: console
+              containerPort: 9001
+              protocol: TCP
+
+          env:
+            # ── Credentials ─────────────────────────────────────────────────
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: minio-auth
+                  key: MINIO_ROOT_USER
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: minio-auth
+                  key: MINIO_ROOT_PASSWORD
+
+            # ── Prometheus auth token for /minio/v2/metrics/cluster ──────────
+            - name: MINIO_PROMETHEUS_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: minio-auth
+                  key: MINIO_PROMETHEUS_AUTH_TOKEN
+
+            # ── Cluster config from ConfigMap ────────────────────────────────
+            - name: MINIO_SITE_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: minio-config
+                  key: MINIO_SITE_NAME
+            - name: MINIO_STORAGE_CLASS_STANDARD
+              valueFrom:
+                configMapKeyRef:
+                  name: minio-config
+                  key: MINIO_STORAGE_CLASS_STANDARD
+            - name: MINIO_STORAGE_CLASS_RRS
+              valueFrom:
+                configMapKeyRef:
+                  name: minio-config
+                  key: MINIO_STORAGE_CLASS_RRS
+            - name: MINIO_PROMETHEUS_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: minio-config
+                  key: MINIO_PROMETHEUS_URL
+            - name: MINIO_PROMETHEUS_JOB_ID
+              valueFrom:
+                configMapKeyRef:
+                  name: minio-config
+                  key: MINIO_PROMETHEUS_JOB_ID
+            - name: MINIO_PROMETHEUS_AUTH_TYPE
+              valueFrom:
+                configMapKeyRef:
+                  name: minio-config
+                  key: MINIO_PROMETHEUS_AUTH_TYPE
+            - name: MINIO_BROWSER
+              valueFrom:
+                configMapKeyRef:
+                  name: minio-config
+                  key: MINIO_BROWSER
+
+          # ─── Resources ───────────────────────────────────────────────────────
+          # Sized for archive throughput: Flink writes Parquet files in batch;
+          # peak write load is lower than InfluxDB.
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              cpu: "2000m"
+              memory: "4Gi"
+
+          # ─── Probes ──────────────────────────────────────────────────────────
+          readinessProbe:
+            httpGet:
+              path: /minio/health/ready
+              port: s3-api
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+            successThreshold: 1
+
+          livenessProbe:
+            httpGet:
+              path: /minio/health/live
+              port: s3-api
+            initialDelaySeconds: 60
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 5
+
+          startupProbe:
+            httpGet:
+              path: /minio/health/live
+              port: s3-api
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 30   # 5 minutes for cluster formation on first boot
+
+          volumeMounts:
+            - name: minio-data
+              mountPath: /data
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: false   # MinIO writes tmp files to root fs on startup
+            runAsNonRoot: true
+            runAsUser: 1000
+
+  # ─── VolumeClaimTemplates ────────────────────────────────────────────────────
+  # Each pod gets its own PVC representing one erasure-coding drive.
+  # Storage sizing:
+  #   Raw sensor archive: 10k evt/s × 90d × ~500 B/event × 10 year target ≈ 15 Ti
+  #   Forensic evidence: typically small (PCAP + JSON per alert), 1 Ti headroom
+  #   Flink checkpoints, MLflow artifacts: ~500 Gi
+  #   Total usable with EC:2 = 2 Ti per drive × 4 drives × 0.5 efficiency = 4 Ti usable
+  #   Adjust storageRequest below for your expected data volume.
+  volumeClaimTemplates:
+    - metadata:
+        name: minio-data
+        labels:
+          app: minio
+          app.kubernetes.io/part-of: railos-pilot
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        # Replace 'standard' with your cluster's storage class.
+        # For MinIO best performance, use an NVMe-backed class.
+        # On-prem: Longhorn / Rook-Ceph. Cloud: gp3 (AWS), premium-rwo (GKE).
+        storageClassName: standard
+        resources:
+          requests:
+            storage: 2Ti

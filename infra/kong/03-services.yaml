@@ -1,0 +1,73 @@
+---
+# Kong API Gateway — Kubernetes Services
+#
+# Two services are created:
+#   1. kong-proxy     (ClusterIP, port 8000) — handles all incoming API traffic
+#   2. kong-admin     (ClusterIP, port 8001) — Kong Admin API for management
+#
+# The proxy service (port 8000) is the ingress point for all /api/v1/* routes.
+# In production, expose kong-proxy via an Ingress or LoadBalancer; do NOT
+# expose kong-admin externally.
+#
+# Satisfies:
+#   - Design §9.2:  Kong proxy on port 8000, Admin API on port 8001
+#   - Req 24:       Single API gateway ingress point for all RailOS services
+apiVersion: v1
+kind: Service
+metadata:
+  name: kong-proxy
+  namespace: railos
+  labels:
+    app.kubernetes.io/name: kong
+    app.kubernetes.io/component: api-gateway-proxy
+    app.kubernetes.io/part-of: railos-pilot
+    app.kubernetes.io/version: "3.6"
+  annotations:
+    # Prometheus scrape the proxy metrics endpoint (exposed by the prometheus plugin)
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8000"
+    prometheus.io/path: "/metrics"
+spec:
+  type: ClusterIP
+  selector:
+    app: kong
+  ports:
+    - name: proxy-http
+      port: 8000
+      targetPort: 8000
+      protocol: TCP
+    - name: proxy-https
+      port: 8443
+      targetPort: 8443
+      protocol: TCP
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kong-admin
+  namespace: railos
+  labels:
+    app.kubernetes.io/name: kong
+    app.kubernetes.io/component: api-gateway-admin
+    app.kubernetes.io/part-of: railos-pilot
+    app.kubernetes.io/version: "3.6"
+  annotations:
+    # Prometheus scrapes Admin API at /metrics for Kong telemetry
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8001"
+    prometheus.io/path: "/metrics"
+spec:
+  type: ClusterIP
+  # Only expose admin API within the cluster — never LoadBalancer/NodePort
+  selector:
+    app: kong
+  ports:
+    - name: admin-http
+      port: 8001
+      targetPort: 8001
+      protocol: TCP
+    - name: admin-https
+      port: 8444
+      targetPort: 8444
+      protocol: TCP

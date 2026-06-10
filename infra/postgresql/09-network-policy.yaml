@@ -1,0 +1,94 @@
+---
+# NetworkPolicy for PostgreSQL Patroni cluster
+#
+# Default-deny: all ingress and egress to postgresql-patroni pods is blocked
+# unless explicitly allowed by the rules below.
+#
+# Allowed ingress:
+#   - Port 5432 (PostgreSQL) from railos namespace only (application services)
+#   - Port 8008 (Patroni REST API) from railos namespace only (health checks)
+#   - Port 9187 (postgres_exporter metrics) from monitoring namespace (Prometheus)
+#
+# Allowed egress:
+#   - Port 5432 between postgresql-patroni pods (streaming replication)
+#   - Port 8008 between postgresql-patroni pods (Patroni DCS gossip)
+#   - Kubernetes API server port 443/6443 (Patroni Kubernetes DCS)
+#   - DNS resolution (port 53)
+#
+# Satisfies:
+#   - Requirement 23: network access controls (IEC 62443 zone isolation)
+#   - Requirement 39: container security with Pod Security Admission
+#   - Design §9.3:    container security context
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgresql-patroni-netpol
+  namespace: railos
+  labels:
+    app: postgresql-patroni
+    app.kubernetes.io/part-of: railos-pilot
+spec:
+  podSelector:
+    matchLabels:
+      app: postgresql-patroni
+  policyTypes:
+    - Ingress
+    - Egress
+
+  ingress:
+    # Allow PostgreSQL connections from any pod in the railos namespace
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: railos
+      ports:
+        - protocol: TCP
+          port: 5432
+
+    # Allow Patroni REST API calls from within railos namespace
+    # (used by other Patroni pods for leader election and health checks)
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: railos
+      ports:
+        - protocol: TCP
+          port: 8008
+
+    # Allow Prometheus scraping of postgres_exporter from monitoring namespace
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - protocol: TCP
+          port: 9187
+        - protocol: TCP
+          port: 8008   # also allow Patroni metrics from monitoring
+
+  egress:
+    # Allow streaming replication and Patroni communication between cluster pods
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postgresql-patroni
+      ports:
+        - protocol: TCP
+          port: 5432
+        - protocol: TCP
+          port: 8008
+
+    # Allow DNS resolution (required for pod-to-pod DNS and Kubernetes API discovery)
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+
+    # Allow access to the Kubernetes API server (Patroni Kubernetes DCS)
+    # Port 443 is standard; 6443 is used by some cluster distributions (kubeadm)
+    - ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 6443

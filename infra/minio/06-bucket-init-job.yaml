@@ -1,0 +1,211 @@
+---
+# MinIO Bucket Initialisation Job
+#
+# Runs once after the MinIO cluster is healthy to:
+#   1. Create the four required buckets (railos-delta-lake, railos-flink-checkpoints,
+#      railos-forensic-evidence, railos-mlflow-artifacts)
+#   2. Enable Object Lock in COMPLIANCE mode on railos-forensic-evidence (Req 26, Design §9.5)
+#   3. Set a 365-day COMPLIANCE retention policy on the forensic bucket (Req 26)
+#   4. Apply versioning on railos-delta-lake (required by Delta Lake for ACID transactions)
+#   5. Apply lifecycle rules to railos-delta-lake (expire non-current Parquet parts > 90 days)
+#
+# This Job uses the MinIO Client (mc) — the same image as the MinIO server,
+# which ships mc at /usr/bin/mc.
+#
+# The Job is idempotent: mc commands check for existence before creating,
+# or are safe to re-run (alias set, bucket make, object lock set are idempotent).
+#
+# Satisfies:
+#   - Req 1 C4:      Archive bucket for sensor events after InfluxDB expiry
+#   - Req 26:        WORM / COMPLIANCE Object Lock on forensic evidence
+#   - Design §4.2:   Flink checkpoint bucket for stream processing
+#   - Design §9.5:   railos-forensic-evidence bucket with 365-day COMPLIANCE lock
+#   - Design §10.4:  Delta Lake cold storage tier (railos-delta-lake)
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: minio-bucket-init
+  namespace: railos
+  labels:
+    app: minio-bucket-init
+    app.kubernetes.io/name: minio
+    app.kubernetes.io/component: bucket-init
+    app.kubernetes.io/part-of: railos-pilot
+  annotations:
+    description: "One-time MinIO bucket and Object Lock setup for RailOS"
+    # Re-run with: kubectl delete job minio-bucket-init -n railos && kubectl apply -f 06-bucket-init-job.yaml
+spec:
+  backoffLimit: 5
+  # Clean up 1 hour after completion
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app: minio-bucket-init
+        app.kubernetes.io/part-of: railos-pilot
+    spec:
+      restartPolicy: OnFailure
+
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+
+      containers:
+        - name: mc
+          # mc is bundled in the MinIO image
+          image: quay.io/minio/minio:RELEASE.2024-06-04T19-20-08Z
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+
+              MINIO_URL="http://minio.railos.svc.cluster.local:9000"
+              ALIAS="railos"
+
+              echo "=== RailOS MinIO Bucket Init ==="
+              echo "Target: ${MINIO_URL}"
+
+              # ─── Wait for MinIO to be healthy ────────────────────────────────
+              echo "Waiting for MinIO cluster to become healthy..."
+              for i in $(seq 1 36); do
+                HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+                  "${MINIO_URL}/minio/health/ready" 2>/dev/null || echo "000")
+                if [ "${HTTP_CODE}" = "200" ]; then
+                  echo "  MinIO is ready (attempt ${i})."
+                  break
+                fi
+                if [ "${i}" = "36" ]; then
+                  echo "  ERROR: MinIO did not become ready after 3 minutes. Aborting."
+                  exit 1
+                fi
+                echo "  Attempt ${i}/36: HTTP ${HTTP_CODE}, waiting 5s..."
+                sleep 5
+              done
+
+              # ─── Configure mc alias ──────────────────────────────────────────
+              echo ""
+              echo "--- Configuring mc alias ---"
+              mc alias set "${ALIAS}" \
+                "${MINIO_URL}" \
+                "${MINIO_INIT_ACCESS_KEY}" \
+                "${MINIO_INIT_SECRET_KEY}" \
+                --api "S3v4"
+              echo "  Alias '${ALIAS}' configured."
+
+              # ─── Helper: create a bucket if it does not exist ─────────────────
+              # Usage: create_bucket <bucket-name> [--with-lock]
+              create_bucket() {
+                BUCKET="$1"
+                WITH_LOCK="$2"
+
+                if mc ls "${ALIAS}/${BUCKET}" > /dev/null 2>&1; then
+                  echo "  Bucket '${BUCKET}' already exists — skipping creation."
+                else
+                  if [ "${WITH_LOCK}" = "--with-lock" ]; then
+                    echo "  Creating bucket '${BUCKET}' with Object Lock..."
+                    mc mb --with-lock "${ALIAS}/${BUCKET}"
+                  else
+                    echo "  Creating bucket '${BUCKET}'..."
+                    mc mb "${ALIAS}/${BUCKET}"
+                  fi
+                  echo "  Created."
+                fi
+              }
+
+              echo ""
+              echo "--- Creating buckets ---"
+
+              # 1. railos-delta-lake: Delta Lake Parquet archive (Req 1 C4, Design §4.2)
+              create_bucket "railos-delta-lake"
+
+              # 2. railos-flink-checkpoints: Flink state backend checkpoints (Design §4.2)
+              create_bucket "railos-flink-checkpoints"
+
+              # 3. railos-forensic-evidence: WORM / Object Lock (Req 26, Design §9.5)
+              #    IMPORTANT: --with-lock must be specified at bucket-creation time.
+              #    Object Lock cannot be enabled on an existing bucket.
+              create_bucket "railos-forensic-evidence" "--with-lock"
+
+              # 4. railos-mlflow-artifacts: MLflow model registry artifact store (Design §4)
+              create_bucket "railos-mlflow-artifacts"
+
+              # ─── Versioning on Delta Lake bucket ─────────────────────────────
+              # Delta Lake requires S3 versioning to support ACID transaction log
+              # and time-travel queries.
+              echo ""
+              echo "--- Enabling versioning on railos-delta-lake ---"
+              mc version enable "${ALIAS}/railos-delta-lake"
+              echo "  Versioning enabled."
+
+              # ─── Object Lock COMPLIANCE policy on forensic bucket ─────────────
+              # COMPLIANCE mode: even the MinIO root user cannot delete or overwrite
+              # objects before the retention period expires.  This satisfies
+              # Req 26 and Design §9.5 (append-only, 365-day minimum retention).
+              echo ""
+              echo "--- Setting COMPLIANCE Object Lock on railos-forensic-evidence ---"
+              mc retention set \
+                --default COMPLIANCE "365d" \
+                "${ALIAS}/railos-forensic-evidence"
+              echo "  COMPLIANCE retention set: 365 days."
+
+              # Verify the lock configuration
+              echo "  Lock config:"
+              mc retention info "${ALIAS}/railos-forensic-evidence"
+
+              # ─── Lifecycle rule on railos-delta-lake ───────────────────────────
+              # After Delta Lake compaction (Task 4.9), old non-current Parquet parts
+              # are superseded.  This lifecycle rule deletes non-current versions after
+              # 90 days to reclaim space, while keeping the current (compacted) version.
+              echo ""
+              echo "--- Setting lifecycle rule on railos-delta-lake ---"
+              # Use mc ilm rule add for MinIO's lifecycle API
+              mc ilm rule add \
+                --noncurrent-expire-days 90 \
+                "${ALIAS}/railos-delta-lake"
+              echo "  Lifecycle rule: non-current versions expire after 90 days."
+
+              # ─── Bucket summary ───────────────────────────────────────────────
+              echo ""
+              echo "--- Bucket summary ---"
+              mc ls "${ALIAS}/"
+
+              echo ""
+              echo "=== MinIO bucket init complete ==="
+
+          env:
+            - name: MINIO_INIT_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: minio-auth
+                  key: MINIO_INIT_ACCESS_KEY
+            - name: MINIO_INIT_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: minio-auth
+                  key: MINIO_INIT_SECRET_KEY
+            # mc stores its config in $HOME/.mc — set a writable home dir
+            - name: HOME
+              value: "/tmp"
+            # mc TLS verification (set to "false" if using self-signed certs in dev)
+            - name: MC_INSECURE
+              value: "false"
+
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "200m"
+              memory: "256Mi"
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            # mc writes config to /tmp/HOME, so root fs can be read-only
+            readOnlyRootFilesystem: false
+            runAsNonRoot: true
+            runAsUser: 1000

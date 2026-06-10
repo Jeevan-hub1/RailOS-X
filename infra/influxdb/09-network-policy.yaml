@@ -1,0 +1,137 @@
+---
+# NetworkPolicy — InfluxDB Primary
+#
+# Restricts ingress to the primary InfluxDB pod to only authorized sources:
+#   - Flink task managers (Data_Pipeline writes)
+#   - Digital Twin service (state store reads)
+#   - The bootstrap Job
+#   - The standby's WAL receiver sidecar (WAL streaming connection)
+#   - Prometheus (metrics scrape)
+#
+# Satisfies:
+#   - Requirement 39:  Network segmentation for container security
+#   - IEC 62443:       Zone 2 internal traffic only; no direct external access
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: influxdb-primary-netpol
+  namespace: railos
+  labels:
+    app: influxdb-primary
+    app.kubernetes.io/name: influxdb
+    app.kubernetes.io/part-of: railos-pilot
+spec:
+  podSelector:
+    matchLabels:
+      app: influxdb-primary
+  policyTypes:
+    - Ingress
+    - Egress
+
+  ingress:
+    # HTTP API (port 8086) — Flink writers, Digital Twin, bootstrap job, Prometheus
+    - ports:
+        - port: 8086
+          protocol: TCP
+      from:
+        # Flink task managers writing sensor events
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: flink-taskmanager
+        # Digital Twin state store reads
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: digital-twin
+        # Bootstrap job
+        - podSelector:
+            matchLabels:
+              app: influxdb-bootstrap
+        # Prometheus scraper
+        - podSelector:
+            matchLabels:
+              app: prometheus
+
+    # WAL streaming port (8088) — standby WAL receiver only
+    - ports:
+        - port: 8088
+          protocol: TCP
+      from:
+        - podSelector:
+            matchLabels:
+              app: influxdb-standby
+
+  egress:
+    # Allow DNS resolution
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # Allow outbound to standby for WAL streaming
+    - ports:
+        - port: 8088
+          protocol: TCP
+      to:
+        - podSelector:
+            matchLabels:
+              app: influxdb-standby
+
+---
+# NetworkPolicy — InfluxDB Standby
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: influxdb-standby-netpol
+  namespace: railos
+  labels:
+    app: influxdb-standby
+    app.kubernetes.io/name: influxdb
+    app.kubernetes.io/part-of: railos-pilot
+spec:
+  podSelector:
+    matchLabels:
+      app: influxdb-standby
+  policyTypes:
+    - Ingress
+    - Egress
+
+  ingress:
+    # HTTP API (port 8086) — read-only access for Digital Twin and bootstrap
+    - ports:
+        - port: 8086
+          protocol: TCP
+      from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: digital-twin
+        - podSelector:
+            matchLabels:
+              app: influxdb-bootstrap
+        - podSelector:
+            matchLabels:
+              app: prometheus
+
+    # WAL receive port (8088) — only accept from primary
+    - ports:
+        - port: 8088
+          protocol: TCP
+      from:
+        - podSelector:
+            matchLabels:
+              app: influxdb-primary
+
+  egress:
+    # Allow DNS
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # Standby may need to call primary HTTP API for initial sync verification
+    - ports:
+        - port: 8086
+          protocol: TCP
+      to:
+        - podSelector:
+            matchLabels:
+              app: influxdb-primary

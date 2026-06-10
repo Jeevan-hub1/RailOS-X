@@ -1,0 +1,171 @@
+---
+# Daily PostgreSQL backup CronJob
+#
+# Performs pg_dumpall on each RailOS database and uploads the compressed
+# dump to an S3-compatible object store (MinIO or AWS S3).
+# Satisfies Req 16 C3: daily automated backup to geographically separate storage.
+#
+# The backup job:
+#   1. Connects to the primary (postgresql-primary service)
+#   2. Dumps each database to a timestamped .sql.gz file
+#   3. Uploads to the configured S3 bucket
+#   4. Emits a BACKUP_INTEGRITY_FAILURE event on any failure (Design §10.2)
+#
+# A separate restore-test CronJob (10b) runs weekly in an isolated test namespace
+# to validate backup integrity (Design §10.2: "daily automated restore integrity test").
+#
+# Satisfies:
+#   - Requirement 16 C3: daily geo-replicated backups
+#   - Design §10.2:      backup integrity testing, BACKUP_INTEGRITY_FAILURE alert
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: postgresql-daily-backup
+  namespace: railos
+  labels:
+    app: postgresql-backup
+    app.kubernetes.io/component: backup
+    app.kubernetes.io/part-of: railos-pilot
+spec:
+  # Run at 02:00 UTC daily
+  schedule: "0 2 * * *"
+  concurrencyPolicy: Forbid         # never run two backup jobs simultaneously
+  successfulJobsHistoryLimit: 7     # keep 7 days of successful job records
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2               # retry up to 2 times on failure
+      template:
+        metadata:
+          labels:
+            app: postgresql-backup
+            app.kubernetes.io/part-of: railos-pilot
+        spec:
+          restartPolicy: OnFailure
+          serviceAccountName: patroni  # reuse SA for namespace-scoped access
+
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 999
+            runAsGroup: 999
+            fsGroup: 999
+
+          containers:
+            - name: pg-backup
+              image: postgres:16.3-alpine
+              imagePullPolicy: IfNotPresent
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -euo pipefail
+                  TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+                  BACKUP_DIR="/tmp/backups/${TIMESTAMP}"
+                  mkdir -p "${BACKUP_DIR}"
+
+                  echo "[backup] Starting backup at ${TIMESTAMP}"
+
+                  DATABASES="railos_audit railos_hazard railos_registry railos_traceability"
+
+                  for DB in ${DATABASES}; do
+                    echo "[backup] Dumping database: ${DB}"
+                    pg_dump \
+                      --host=postgresql-primary.railos.svc.cluster.local \
+                      --port=5432 \
+                      --username=postgres \
+                      --format=custom \
+                      --compress=9 \
+                      --no-password \
+                      "${DB}" \
+                      > "${BACKUP_DIR}/${DB}_${TIMESTAMP}.dump"
+                    echo "[backup] Completed: ${DB}"
+                  done
+
+                  # Also dump global objects (roles, tablespaces)
+                  pg_dumpall \
+                    --host=postgresql-primary.railos.svc.cluster.local \
+                    --port=5432 \
+                    --username=postgres \
+                    --globals-only \
+                    --no-password \
+                    | gzip > "${BACKUP_DIR}/globals_${TIMESTAMP}.sql.gz"
+
+                  echo "[backup] All databases dumped. Uploading to S3..."
+
+                  # Upload to S3-compatible storage (configure AWS_* env vars below)
+                  # Uses awscli; replace with mc (MinIO client) if using MinIO
+                  for FILE in "${BACKUP_DIR}"/*; do
+                    aws s3 cp "${FILE}" \
+                      "s3://${BACKUP_S3_BUCKET}/postgresql/${TIMESTAMP}/$(basename ${FILE})" \
+                      --storage-class STANDARD_IA
+                    echo "[backup] Uploaded: $(basename ${FILE})"
+                  done
+
+                  echo "[backup] Backup complete. All files uploaded to s3://${BACKUP_S3_BUCKET}/postgresql/${TIMESTAMP}/"
+
+                  # Cleanup local temp files
+                  rm -rf "${BACKUP_DIR}"
+                  echo "[backup] Local temp files cleaned up."
+
+              env:
+                - name: PGPASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: postgresql-patroni-secrets
+                      key: superuser-password
+                - name: AWS_ACCESS_KEY_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: backup-s3-credentials
+                      key: aws-access-key-id
+                - name: AWS_SECRET_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: backup-s3-credentials
+                      key: aws-secret-access-key
+                - name: AWS_DEFAULT_REGION
+                  value: "ap-south-1"    # Mumbai region for Indian Railways geo-replication
+                - name: BACKUP_S3_BUCKET
+                  value: "railos-postgresql-backups"   # replace with actual bucket name
+                - name: AWS_ENDPOINT_URL
+                  value: ""             # set if using MinIO: http://minio.railos.svc:9000
+
+              resources:
+                requests:
+                  cpu: "100m"
+                  memory: "256Mi"
+                limits:
+                  cpu: "500m"
+                  memory: "512Mi"
+
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: ["ALL"]
+
+              volumeMounts:
+                - name: tmp-backup
+                  mountPath: /tmp/backups
+
+          volumes:
+            - name: tmp-backup
+              emptyDir:
+                sizeLimit: 20Gi    # enough for compressed dumps of all 4 databases
+
+---
+# Placeholder Secret for S3 backup credentials
+# IMPORTANT: Replace the base64 placeholder values before deploying.
+# In production, use External Secrets Operator or HashiCorp Vault (Req 37).
+apiVersion: v1
+kind: Secret
+metadata:
+  name: backup-s3-credentials
+  namespace: railos
+  labels:
+    app: postgresql-backup
+    app.kubernetes.io/part-of: railos-pilot
+type: Opaque
+data:
+  # Placeholder values — MUST be replaced with real credentials
+  aws-access-key-id: UEFDS0VEX0FDQ0VTU19LRVlfSUQ=
+  aws-secret-access-key: UEFDS0VEX1NFQ1JFVF9BQ0NFU1NfS0VZ

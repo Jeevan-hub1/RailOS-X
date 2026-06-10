@@ -1,0 +1,128 @@
+---
+# Flink Services
+#
+# Three services are needed for a Flink cluster:
+#   1. jobmanager-rpc   — RPC port used by TaskManagers to connect to JobManager
+#   2. jobmanager-rest  — REST API / Web UI (job submission, monitoring)
+#   3. jobmanager-blob  — BLOB server for job JAR and task library distribution
+#
+# Design §4.2 / Requirement 1 C6: TaskManagers connect to JobManager via RPC.
+# Prometheus scrapes metrics on port 9249 from all pods (annotations on pods).
+#
+# NOTE: The REST service uses ClusterIP (internal only). To expose the Web UI
+# externally for job submission, add an Ingress or change type to LoadBalancer
+# with appropriate network policy restrictions (Req 23).
+
+# ─── JobManager RPC ───────────────────────────────────────────────────────────
+# TaskManagers register with the JobManager over this port.
+apiVersion: v1
+kind: Service
+metadata:
+  name: flink-jobmanager-rpc
+  namespace: railos
+  labels:
+    app: flink
+    app.kubernetes.io/name: flink
+    app.kubernetes.io/component: jobmanager
+    app.kubernetes.io/part-of: railos-pilot
+spec:
+  type: ClusterIP
+  clusterIP: None    # Headless — TaskManagers resolve JM by DNS for HA failover
+  selector:
+    app: flink
+    component: jobmanager
+  ports:
+    - name: rpc
+      port: 6123
+      targetPort: rpc
+      protocol: TCP
+
+---
+# ─── JobManager REST / Web UI ─────────────────────────────────────────────────
+# Used for:
+#   - Flink REST API (job submission, cancellation, savepoint triggers)
+#   - Flink Web Dashboard (read-only in production via web.submit.enable=false)
+#   - Prometheus metrics scraping (port 9249)
+apiVersion: v1
+kind: Service
+metadata:
+  name: flink-jobmanager-rest
+  namespace: railos
+  labels:
+    app: flink
+    app.kubernetes.io/name: flink
+    app.kubernetes.io/component: jobmanager
+    app.kubernetes.io/part-of: railos-pilot
+  annotations:
+    # Allow Prometheus to discover this service for metric scraping
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "9249"
+    prometheus.io/path: "/metrics"
+spec:
+  type: ClusterIP
+  selector:
+    app: flink
+    component: jobmanager
+  ports:
+    - name: rest
+      port: 8081
+      targetPort: rest
+      protocol: TCP
+    - name: metrics
+      port: 9249
+      targetPort: metrics
+      protocol: TCP
+
+---
+# ─── JobManager BLOB Server ───────────────────────────────────────────────────
+# Used to distribute job JARs and task libraries to TaskManagers.
+apiVersion: v1
+kind: Service
+metadata:
+  name: flink-jobmanager-blob
+  namespace: railos
+  labels:
+    app: flink
+    app.kubernetes.io/name: flink
+    app.kubernetes.io/component: jobmanager
+    app.kubernetes.io/part-of: railos-pilot
+spec:
+  type: ClusterIP
+  selector:
+    app: flink
+    component: jobmanager
+  ports:
+    - name: blob
+      port: 6124
+      targetPort: blob
+      protocol: TCP
+
+---
+# ─── TaskManager Metrics Service ──────────────────────────────────────────────
+# Headless service so Prometheus can discover and scrape each TaskManager pod
+# individually (one target per TM pod with distinct metrics labels).
+apiVersion: v1
+kind: Service
+metadata:
+  name: flink-taskmanager-metrics
+  namespace: railos
+  labels:
+    app: flink
+    app.kubernetes.io/name: flink
+    app.kubernetes.io/component: taskmanager
+    app.kubernetes.io/part-of: railos-pilot
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "9249"
+    prometheus.io/path: "/metrics"
+spec:
+  type: ClusterIP
+  clusterIP: None    # Headless — one DNS entry per TM pod
+  selector:
+    app: flink
+    component: taskmanager
+  ports:
+    - name: metrics
+      port: 9249
+      targetPort: metrics
+      protocol: TCP

@@ -1,0 +1,261 @@
+---
+# Flink TaskManager StatefulSet
+#
+# 3 TaskManager replicas × 4 task slots = 12 total slots.
+# Default job parallelism is set to 12 (see 01-configmap.yaml).
+#
+# TaskManagers execute the actual stream processing operators:
+#   - Sensor event validation and routing (Req 1 C3/C7)
+#   - Sensor feature extraction (Design §4.2)
+#   - Stream joins (sensor + telemetry correlation)
+#   - Anomaly rule evaluation (time-windowed thresholds)
+#   - InfluxDB sink (Req 1 C4 — 90-day hot storage)
+#   - Delta Lake sink (long-term Parquet archival)
+#
+# StatefulSet (vs Deployment) provides:
+#   - Stable pod DNS names (flink-taskmanager-{0..2}) for TaskManager resource IDs
+#   - Ordered pod rollout (safe for running jobs — one TM at a time)
+#   - Independent PVC per TM pod for RocksDB local state (optional, see below)
+#
+# Satisfies:
+#   - Design §4.2:    Task Managers on Kubernetes, enough slots for stream jobs
+#   - Requirement 1 C6:  10,000 events/s — 12 parallel task slots
+#   - Requirement 39:  Non-root, capabilities dropped
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: flink-taskmanager
+  namespace: railos
+  labels:
+    app: flink
+    component: taskmanager
+    app.kubernetes.io/name: flink
+    app.kubernetes.io/component: taskmanager
+    app.kubernetes.io/part-of: railos-pilot
+    app.kubernetes.io/version: "1.18.1"
+spec:
+  serviceName: flink-taskmanager-metrics   # Headless service for pod DNS / Prometheus
+  replicas: 3                              # 3 TMs × 4 slots = 12 slots total
+  updateStrategy:
+    type: RollingUpdate                    # Roll one TM at a time (safe for live jobs)
+  podManagementPolicy: Parallel           # All TMs start in parallel (faster cluster init)
+  selector:
+    matchLabels:
+      app: flink
+      component: taskmanager
+  template:
+    metadata:
+      labels:
+        app: flink
+        component: taskmanager
+        app.kubernetes.io/name: flink
+        app.kubernetes.io/component: taskmanager
+        app.kubernetes.io/part-of: railos-pilot
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9249"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: flink
+
+      # ─── Security Context (Req 39 / Design §9.3) ──────────────────────────
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 9999
+        runAsGroup: 9999
+        fsGroup: 9999
+
+      # ─── Anti-Affinity: spread TMs across nodes ───────────────────────────
+      # Ensures a single node failure takes down at most 1 of 3 TMs,
+      # reducing job restart scope (only tasks on the failed TM are rescheduled).
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchExpressions:
+                  - key: component
+                    operator: In
+                    values:
+                      - taskmanager
+              topologyKey: kubernetes.io/hostname
+
+      terminationGracePeriodSeconds: 120   # Allow running tasks to checkpoint before shutdown
+
+      # ─── Main Container ───────────────────────────────────────────────────
+      containers:
+        - name: taskmanager
+          image: apache/flink:1.18.1-scala_2.12-java11
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/bash
+            - -c
+            - |
+              # Copy Flink config from ConfigMap into writable location
+              cp /opt/flink/conf-readonly/flink-conf.yaml /opt/flink/conf/flink-conf.yaml
+              cp /opt/flink/conf-readonly/log4j2.properties /opt/flink/conf/log4j2.properties
+
+              # Append runtime-resolved JobManager address
+              cat >> /opt/flink/conf/flink-conf.yaml <<EOF
+
+              # TaskManager runtime config — appended at startup
+              jobmanager.rpc.address: flink-jobmanager-rpc.railos.svc.cluster.local
+              jobmanager.rpc.port: 6123
+              taskmanager.host: ${HOSTNAME}.flink-taskmanager-metrics.railos.svc.cluster.local
+              EOF
+
+              exec /docker-entrypoint.sh taskmanager
+
+          ports:
+            - name: data
+              containerPort: 6121
+              protocol: TCP
+            - name: ipc
+              containerPort: 6122
+              protocol: TCP
+            - name: metrics
+              containerPort: 9249
+              protocol: TCP
+
+          # ─── Environment ─────────────────────────────────────────────────
+          env:
+            - name: KAFKA_BOOTSTRAP_SERVERS
+              valueFrom:
+                secretKeyRef:
+                  name: flink-kafka-config
+                  key: KAFKA_BOOTSTRAP_SERVERS
+            - name: KAFKA_CONSUMER_GROUP_ID
+              valueFrom:
+                secretKeyRef:
+                  name: flink-kafka-config
+                  key: KAFKA_CONSUMER_GROUP_ID
+            - name: INFLUXDB_URL
+              valueFrom:
+                secretKeyRef:
+                  name: flink-influxdb-config
+                  key: INFLUXDB_URL
+            - name: INFLUXDB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: flink-influxdb-config
+                  key: INFLUXDB_TOKEN
+            - name: INFLUXDB_ORG
+              valueFrom:
+                secretKeyRef:
+                  name: flink-influxdb-config
+                  key: INFLUXDB_ORG
+            - name: INFLUXDB_BUCKET
+              valueFrom:
+                secretKeyRef:
+                  name: flink-influxdb-config
+                  key: INFLUXDB_BUCKET
+            - name: DELTA_LAKE_S3_ENDPOINT
+              valueFrom:
+                secretKeyRef:
+                  name: flink-deltalake-config
+                  key: DELTA_LAKE_S3_ENDPOINT
+            - name: DELTA_LAKE_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: flink-deltalake-config
+                  key: DELTA_LAKE_ACCESS_KEY
+            - name: DELTA_LAKE_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: flink-deltalake-config
+                  key: DELTA_LAKE_SECRET_KEY
+            # JVM tuning — G1GC with larger heap regions for streaming workloads
+            - name: FLINK_ENV_JAVA_OPTS
+              value: >-
+                -server
+                -XX:+UseG1GC
+                -XX:MaxGCPauseMillis=20
+                -XX:G1HeapRegionSize=32m
+                -XX:InitiatingHeapOccupancyPercent=35
+                -XX:+ExplicitGCInvokesConcurrent
+                -Djava.awt.headless=true
+
+          # ─── Resources ───────────────────────────────────────────────────
+          # Sized to support 10,000 events/s across 12 slots (Req 1 C6).
+          # 4 slots × 4 GiB process memory = 4 GiB per TM (managed memory
+          # fraction 0.40 gives ~1.28 GiB for RocksDB per TM).
+          resources:
+            requests:
+              cpu: "1000m"       # 1 vCPU base for 4 slots
+              memory: "4Gi"
+            limits:
+              cpu: "4000m"       # 4 vCPU burst for ingestion spikes
+              memory: "5Gi"      # Slightly above process.size (4096m) for JVM overhead
+
+          # ─── Probes ──────────────────────────────────────────────────────
+          # TaskManagers don't expose an HTTP health endpoint by default;
+          # use a TCP check on the IPC port to confirm the TM process is alive.
+          readinessProbe:
+            tcpSocket:
+              port: ipc
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            tcpSocket:
+              port: ipc
+            initialDelaySeconds: 60
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 5
+
+          # ─── Volume Mounts ───────────────────────────────────────────────
+          volumeMounts:
+            - name: flink-config-readonly
+              mountPath: /opt/flink/conf-readonly
+              readOnly: true
+            - name: flink-conf-writable
+              mountPath: /opt/flink/conf
+            - name: flink-tmp
+              mountPath: /tmp
+            # RocksDB local state directory (per-TM PVC via volumeClaimTemplates)
+            - name: flink-rocksdb
+              mountPath: /flink/rocksdb
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: false   # Flink writes to /opt/flink/conf at runtime
+
+      # ─── Volumes ─────────────────────────────────────────────────────────
+      volumes:
+        - name: flink-config-readonly
+          configMap:
+            name: flink-config
+            items:
+              - key: flink-conf.yaml
+                path: flink-conf.yaml
+              - key: log4j2.properties
+                path: log4j2.properties
+        - name: flink-conf-writable
+          emptyDir: {}
+        - name: flink-tmp
+          emptyDir: {}
+
+  # ─── VolumeClaimTemplates ─────────────────────────────────────────────────
+  # Each TaskManager gets a dedicated 50 Gi PVC for RocksDB local state files.
+  # RocksDB uses this for SST files and WAL before checkpointing to the shared PVC.
+  # PVCs survive pod restarts, allowing RocksDB to resume from local state
+  # rather than downloading the full checkpoint from remote storage on every restart.
+  volumeClaimTemplates:
+    - metadata:
+        name: flink-rocksdb
+        labels:
+          app: flink
+          component: taskmanager
+          app.kubernetes.io/part-of: railos-pilot
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        # Replace 'standard' with your cluster's SSD-backed storage class.
+        # RocksDB benefits significantly from SSD IOPS — use gp3/premium-rwo.
+        storageClassName: standard
+        resources:
+          requests:
+            storage: 50Gi

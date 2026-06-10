@@ -1,0 +1,39 @@
+---
+# MLflow Tracking Server — Kubernetes Service
+#
+# ClusterIP service on port 5000.
+# Accessible at: http://mlflow.railos.svc.cluster.local:5000
+#
+# The MLflow REST API is used by:
+#   - All ML training jobs (log runs, params, metrics, artifacts)
+#   - RailOS services (query model versions for deployment)
+#   - Kong API Gateway (routes /api/v1/mlflow/* to this service)
+#   - Traceability matrix builder (Task 21.1, links run IDs to requirements)
+#
+# Satisfies:
+#   - Req 11:   MLflow REST API accessible to all RailOS ML components
+#   - Req 39:   Internal ClusterIP only — not exposed externally without Kong JWT
+apiVersion: v1
+kind: Service
+metadata:
+  name: mlflow
+  namespace: railos
+  labels:
+    app.kubernetes.io/name: mlflow
+    app.kubernetes.io/component: ml-tracking
+    app.kubernetes.io/part-of: railos-pilot
+    app.kubernetes.io/version: "2.13"
+  annotations:
+    # Prometheus scrape — MLflow exposes /metrics with gunicorn/process stats
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "5000"
+    prometheus.io/path: "/metrics"
+spec:
+  type: ClusterIP
+  selector:
+    app: mlflow
+  ports:
+    - name: mlflow-http
+      port: 5000
+      targetPort: 5000
+      protocol: TCP

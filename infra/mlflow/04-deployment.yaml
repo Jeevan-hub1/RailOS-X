@@ -1,0 +1,306 @@
+---
+# MLflow Tracking Server 2.13 — Deployment
+#
+# Deploys 2 replicas of the MLflow tracking server:
+#   - Backend store: PostgreSQL (Patroni cluster) for tracking metadata
+#   - Artifact store: MinIO at s3://railos-mlflow-artifacts (S3-compatible, geo-replicated)
+#   - Non-root security context (UID 1000)
+#   - Init container waits for PostgreSQL and MinIO to be reachable before startup
+#
+# Model versioning (Req 11 C1):
+#   Training jobs tag model versions with railos_model_version=MAJOR.MINOR.PATCH.
+#   The MLflow Model Registry stores integer version IDs internally; the semver
+#   tag is the human-readable governance identifier.
+#
+# Geo-replication:
+#   MinIO distributed mode with 4 nodes provides EC:2 erasure coding.
+#   "Geo-replication" in this context means: artifacts are erasure-coded across
+#   4 MinIO pods, surviving loss of 2 nodes without data loss.
+#   For true geographic redundancy, configure MinIO site replication to a
+#   separate datacenter cluster (MinIO site replication feature).
+#
+# Satisfies:
+#   - Req 11:       MLflow stores model versions, audit log entries, artifact references
+#   - Design §4.2:  MLflow Registry in Tier 4 Central Core
+#   - Design §10.1: MLflow Primary + read replica, artifact storage on geo-replicated S3
+#   - Req 39:       Non-root, no privilege escalation, capabilities drop ALL
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mlflow
+  namespace: railos
+  labels:
+    app: mlflow
+    app.kubernetes.io/name: mlflow
+    app.kubernetes.io/component: ml-tracking
+    app.kubernetes.io/part-of: railos-pilot
+    app.kubernetes.io/version: "2.13"
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: mlflow
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0    # Zero-downtime rollouts (training jobs must not lose tracking)
+
+  template:
+    metadata:
+      labels:
+        app: mlflow
+        app.kubernetes.io/name: mlflow
+        app.kubernetes.io/component: ml-tracking
+        app.kubernetes.io/part-of: railos-pilot
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "5000"
+        prometheus.io/path: "/metrics"
+
+    spec:
+      # ─── Security Context ─────────────────────────────────────────────────────
+      # Restricted Pod Security Admission profile (Req 39 / Design §9.3)
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+
+      # ─── Spread replicas across nodes ─────────────────────────────────────────
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: mlflow
+                topologyKey: kubernetes.io/hostname
+
+      terminationGracePeriodSeconds: 30
+
+      # ─── Init Containers ──────────────────────────────────────────────────────
+      initContainers:
+        # Wait for PostgreSQL primary to accept connections
+        - name: wait-for-postgresql
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for PostgreSQL primary..."
+              until nc -z postgresql-primary.railos.svc.cluster.local 5432; do
+                echo "  PostgreSQL not ready — retrying in 5s..."
+                sleep 5
+              done
+              echo "PostgreSQL is reachable."
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+
+        # Wait for MinIO API to accept connections
+        - name: wait-for-minio
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for MinIO..."
+              until wget -q -O /dev/null http://minio.railos.svc.cluster.local:9000/minio/health/ready; do
+                echo "  MinIO not ready — retrying in 5s..."
+                sleep 5
+              done
+              echo "MinIO is reachable and healthy."
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+
+      containers:
+        - name: mlflow
+          image: ghcr.io/mlflow/mlflow:v2.13.0
+          imagePullPolicy: IfNotPresent
+
+          ports:
+            - name: mlflow-http
+              containerPort: 5000
+              protocol: TCP
+
+          command:
+            - sh
+            - /mlflow-config/start.sh
+
+          env:
+            # ── Tracking backend (from Secret) ─────────────────────────────────
+            - name: MLFLOW_BACKEND_STORE_URI
+              valueFrom:
+                secretKeyRef:
+                  name: mlflow-secrets
+                  key: MLFLOW_BACKEND_STORE_URI
+
+            # ── Artifact store root (from Secret) ──────────────────────────────
+            - name: MLFLOW_DEFAULT_ARTIFACT_ROOT
+              valueFrom:
+                secretKeyRef:
+                  name: mlflow-secrets
+                  key: MLFLOW_ARTIFACT_ROOT
+
+            # ── MinIO/S3 credentials (from Secret) ─────────────────────────────
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: mlflow-secrets
+                  key: AWS_ACCESS_KEY_ID
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: mlflow-secrets
+                  key: AWS_SECRET_ACCESS_KEY
+
+            # ── MinIO S3 endpoint override (from ConfigMap) ────────────────────
+            - name: MLFLOW_S3_ENDPOINT_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: mlflow-config
+                  key: MLFLOW_S3_ENDPOINT_URL
+            - name: MLFLOW_S3_IGNORE_TLS
+              valueFrom:
+                configMapKeyRef:
+                  name: mlflow-config
+                  key: MLFLOW_S3_IGNORE_TLS
+
+            # ── Server config (from ConfigMap) ──────────────────────────────────
+            - name: MLFLOW_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: mlflow-config
+                  key: MLFLOW_HOST
+            - name: MLFLOW_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: mlflow-config
+                  key: MLFLOW_PORT
+            - name: MLFLOW_WORKERS
+              valueFrom:
+                configMapKeyRef:
+                  name: mlflow-config
+                  key: MLFLOW_WORKERS
+            - name: GUNICORN_CMD_ARGS
+              valueFrom:
+                configMapKeyRef:
+                  name: mlflow-config
+                  key: GUNICORN_CMD_ARGS
+
+            # ── Connection pool (from ConfigMap) ────────────────────────────────
+            - name: MLFLOW_SQLALCHEMYSTORE_POOL_SIZE
+              valueFrom:
+                configMapKeyRef:
+                  name: mlflow-config
+                  key: MLFLOW_DB_POOL_SIZE
+            - name: MLFLOW_SQLALCHEMYSTORE_MAX_OVERFLOW
+              valueFrom:
+                configMapKeyRef:
+                  name: mlflow-config
+                  key: MLFLOW_DB_MAX_OVERFLOW
+            - name: MLFLOW_SQLALCHEMYSTORE_POOL_RECYCLE
+              valueFrom:
+                configMapKeyRef:
+                  name: mlflow-config
+                  key: MLFLOW_DB_POOL_RECYCLE
+
+            # ── Model governance tags (from ConfigMap) ──────────────────────────
+            - name: RAILOS_MODEL_VERSION_TAG_KEY
+              valueFrom:
+                configMapKeyRef:
+                  name: mlflow-config
+                  key: RAILOS_MODEL_VERSION_TAG_KEY
+            - name: RAILOS_REQUIREMENT_TAG_KEY
+              valueFrom:
+                configMapKeyRef:
+                  name: mlflow-config
+                  key: RAILOS_REQUIREMENT_TAG_KEY
+            - name: RAILOS_FL_ROUND_TAG_KEY
+              valueFrom:
+                configMapKeyRef:
+                  name: mlflow-config
+                  key: RAILOS_FL_ROUND_TAG_KEY
+
+            # ── Boto3 default region (MinIO doesn't require a real region) ──────
+            - name: AWS_DEFAULT_REGION
+              value: "us-east-1"
+
+          # ─── Resources ─────────────────────────────────────────────────────────
+          # MLflow serving metadata reads and artifact uploads from training jobs.
+          # 4 gunicorn workers × 2 replicas handles concurrent training runs.
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              cpu: "2000m"
+              memory: "2Gi"
+
+          # ─── Probes ────────────────────────────────────────────────────────────
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: mlflow-http
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+            successThreshold: 1
+
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: mlflow-http
+            initialDelaySeconds: 45
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 5
+
+          startupProbe:
+            httpGet:
+              path: /health
+              port: mlflow-http
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 24    # 4 minutes (DB schema migration on first start)
+
+          volumeMounts:
+            - name: mlflow-config-volume
+              mountPath: /mlflow-config
+              readOnly: true
+            # Writable /tmp for gunicorn temp files
+            - name: mlflow-tmp
+              mountPath: /tmp
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: false   # MLflow writes gunicorn worker temp files
+            runAsNonRoot: true
+            runAsUser: 1000
+
+      # ─── Volumes ────────────────────────────────────────────────────────────────
+      volumes:
+        - name: mlflow-config-volume
+          configMap:
+            name: mlflow-config
+            items:
+              - key: start.sh
+                path: start.sh
+                mode: 0755
+        - name: mlflow-tmp
+          emptyDir: {}

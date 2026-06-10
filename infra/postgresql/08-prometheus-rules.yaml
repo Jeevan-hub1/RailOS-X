@@ -1,0 +1,204 @@
+---
+# Prometheus AlertingRules for PostgreSQL Patroni HA cluster
+#
+# These rules fire alerts for conditions that threaten:
+#   - High availability (Req 15/16): replica lag, leader loss, pod count
+#   - Audit log integrity (Req 9 C7, Req 11 C5, Req 12 C4)
+#   - Disaster recovery objectives: RPO ≤ 60s
+#
+# Requires prometheus-operator (kube-prometheus-stack) to be installed.
+# If using standalone Prometheus, convert to a prometheus.rules file and
+# add it to your Prometheus configuration under rule_files.
+#
+# Satisfies:
+#   - Requirement 15: HA monitoring and alerting
+#   - Requirement 16: RPO ≤ 60s WAL lag alerting
+#   - Requirement 17: observability stack integration
+#   - Design §8: Prometheus metrics and alerting
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: postgresql-patroni-alerts
+  namespace: railos
+  labels:
+    app: postgresql-patroni
+    app.kubernetes.io/part-of: railos-pilot
+    # Label required by kube-prometheus-stack to pick up this rule file
+    prometheus: kube-prometheus
+    role: alert-rules
+spec:
+  groups:
+    # ── Replication Lag Alerts ─────────────────────────────────────────────
+    - name: postgresql.replication
+      interval: 30s
+      rules:
+        # WAL replay lag > 30s approaches the RPO=60s threshold (Req 16 C2)
+        - alert: PostgreSQLReplicationLagWarning
+          expr: |
+            pg_replication_lag_seconds > 30
+          for: 1m
+          labels:
+            severity: warning
+            component: postgresql-patroni
+            req: "Req16"
+          annotations:
+            summary: "PostgreSQL replication lag is approaching RPO threshold"
+            description: >
+              Pod {{ $labels.pod }} has a replication lag of {{ $value | humanizeDuration }}.
+              RPO threshold is 60s (Req 16 C2). Investigate network or I/O bottlenecks.
+
+        # WAL replay lag > 60s — RPO breached (Req 16 C2)
+        - alert: PostgreSQLReplicationLagCritical
+          expr: |
+            pg_replication_lag_seconds > 60
+          for: 30s
+          labels:
+            severity: critical
+            component: postgresql-patroni
+            req: "Req16"
+          annotations:
+            summary: "PostgreSQL replication lag exceeds RPO=60s — BREACH"
+            description: >
+              Pod {{ $labels.pod }} replication lag {{ $value | humanizeDuration }} exceeds
+              the required RPO of 60s (Req 16 C2). Immediate investigation required.
+
+        # Replication slot is inactive — replica may be disconnected
+        - alert: PostgreSQLInactiveReplicationSlot
+          expr: |
+            pg_replication_slots_active == 0 and pg_replication_slots_slot_type == "physical"
+          for: 2m
+          labels:
+            severity: warning
+            component: postgresql-patroni
+          annotations:
+            summary: "PostgreSQL physical replication slot is inactive"
+            description: >
+              Replication slot {{ $labels.slot_name }} on {{ $labels.pod }} is inactive.
+              A replica may be disconnected; WAL may accumulate and cause disk pressure.
+
+    # ── Cluster Health Alerts ──────────────────────────────────────────────
+    - name: postgresql.cluster
+      interval: 30s
+      rules:
+        # Fewer than 3 pods running — cluster is degraded
+        - alert: PostgreSQLPodCountDegraded
+          expr: |
+            count(kube_pod_status_ready{namespace="railos",pod=~"postgresql-patroni-.*",condition="true"}) < 3
+          for: 2m
+          labels:
+            severity: warning
+            component: postgresql-patroni
+            req: "Req15"
+          annotations:
+            summary: "PostgreSQL cluster has fewer than 3 ready pods"
+            description: >
+              Only {{ $value }} of 3 PostgreSQL pods are ready. HA is degraded.
+              Failover protection is reduced (Req 15).
+
+        # Only 1 pod running — critical, no HA
+        - alert: PostgreSQLClusterCritical
+          expr: |
+            count(kube_pod_status_ready{namespace="railos",pod=~"postgresql-patroni-.*",condition="true"}) < 2
+          for: 1m
+          labels:
+            severity: critical
+            component: postgresql-patroni
+            req: "Req15"
+          annotations:
+            summary: "PostgreSQL cluster has only 1 pod — NO HA"
+            description: >
+              Critical: only {{ $value }} PostgreSQL pod(s) ready. HA and RPO guarantees
+              cannot be met (Req 15, Req 16). Immediate action required.
+
+        # No Patroni master detected — split-brain or leader loss
+        - alert: PostgreSQLNoMaster
+          expr: |
+            absent(pg_up{role="master", namespace="railos"})
+          for: 2m
+          labels:
+            severity: critical
+            component: postgresql-patroni
+            req: "Req16"
+          annotations:
+            summary: "No PostgreSQL master detected — cluster leaderless"
+            description: >
+              No pod with role=master is reachable in the railos namespace.
+              Patroni failover may be in progress. If this persists > 2 min,
+              manual intervention is required (RTO target < 2 min, Req 16).
+
+    # ── Storage Alerts ─────────────────────────────────────────────────────
+    - name: postgresql.storage
+      interval: 60s
+      rules:
+        # PVC usage > 80% — warn before data directory fills
+        - alert: PostgreSQLPVCUsageHigh
+          expr: |
+            (
+              kubelet_volume_stats_used_bytes{namespace="railos", persistentvolumeclaim=~"postgresql-data-.*"}
+              /
+              kubelet_volume_stats_capacity_bytes{namespace="railos", persistentvolumeclaim=~"postgresql-data-.*"}
+            ) > 0.80
+          for: 5m
+          labels:
+            severity: warning
+            component: postgresql-patroni
+          annotations:
+            summary: "PostgreSQL PVC is over 80% full"
+            description: >
+              PVC {{ $labels.persistentvolumeclaim }} is {{ $value | humanizePercentage }} full.
+              Consider expanding the PVC before WAL accumulation causes write failures.
+
+        # PVC usage > 95% — critical
+        - alert: PostgreSQLPVCUsageCritical
+          expr: |
+            (
+              kubelet_volume_stats_used_bytes{namespace="railos", persistentvolumeclaim=~"postgresql-data-.*"}
+              /
+              kubelet_volume_stats_capacity_bytes{namespace="railos", persistentvolumeclaim=~"postgresql-data-.*"}
+            ) > 0.95
+          for: 2m
+          labels:
+            severity: critical
+            component: postgresql-patroni
+          annotations:
+            summary: "PostgreSQL PVC is over 95% full — writes will fail"
+            description: >
+              PVC {{ $labels.persistentvolumeclaim }} is {{ $value | humanizePercentage }} full.
+              PostgreSQL will reject writes when 100% full. Immediate expansion required.
+
+    # ── Connection Pool Alerts ─────────────────────────────────────────────
+    - name: postgresql.connections
+      interval: 60s
+      rules:
+        # Connections > 80% of max_connections=200
+        - alert: PostgreSQLConnectionsHigh
+          expr: |
+            pg_stat_activity_count > 160
+          for: 5m
+          labels:
+            severity: warning
+            component: postgresql-patroni
+          annotations:
+            summary: "PostgreSQL connection count is high"
+            description: >
+              PostgreSQL on {{ $labels.pod }} has {{ $value }} active connections
+              (max_connections=200). Consider using a connection pooler (PgBouncer).
+
+    # ── Audit Log Integrity ────────────────────────────────────────────────
+    - name: postgresql.audit
+      interval: 300s   # check every 5 minutes
+      rules:
+        # postgres_exporter is down — audit metrics unavailable
+        - alert: PostgreSQLExporterDown
+          expr: |
+            up{job=~"postgresql.*", namespace="railos"} == 0
+          for: 3m
+          labels:
+            severity: warning
+            component: postgresql-patroni
+            req: "Req17"
+          annotations:
+            summary: "postgres_exporter is down on a PostgreSQL pod"
+            description: >
+              The postgres_exporter sidecar on {{ $labels.pod }} is not responding.
+              Observability for audit log metrics is unavailable (Req 17).

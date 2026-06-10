@@ -1,0 +1,547 @@
+---
+# PostgreSQL initialization SQL scripts — one file per database
+#
+# These scripts are mounted into the Patroni StatefulSet pods at
+# /etc/patroni-sql/ and executed by init-db.sh after cluster bootstrap.
+#
+# Key design invariants enforced here:
+#   1. Append-only audit tables: triggers PREVENT UPDATE and DELETE on all
+#      audit tables (Req 9 C7, Req 11 C5, Req 12 C4/C5, Design §9.5).
+#   2. Row-level timestamps: all tables carry created_at with DEFAULT now().
+#   3. Retention hint: a 'retain_until' column allows the retention CronJob
+#      (Design §10.4) to identify and archive rows after 365 days.
+#
+# Satisfies:
+#   - Requirement 9  C7:  SECURITY_ANOMALY audit log, append-only, 365 days
+#   - Requirement 11 C5:  Model audit log, 365 days
+#   - Requirement 12 C4/C5: Authorization audit log, append-only, no UPDATE/DELETE
+#   - Design §9.5:         PostgreSQL security_audit table is append-only
+#   - Design §13.1:        Traceability matrix in PostgreSQL
+#   - Design §13.2:        Hazard register, append-only table
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgresql-init-sql
+  namespace: railos
+  labels:
+    app: postgresql-patroni
+    app.kubernetes.io/name: postgresql-patroni
+    app.kubernetes.io/component: database-init
+    app.kubernetes.io/part-of: railos-pilot
+data:
+  # ═══════════════════════════════════════════════════════════════════════════
+  # railos_audit — Cybersecurity anomaly events + model inference audit log
+  #                + authorization events
+  # Req 9 C7, Req 11 C5, Req 12 C4/C5, Design §9.5
+  # ═══════════════════════════════════════════════════════════════════════════
+  railos_audit.sql: |
+    -- ─────────────────────────────────────────────────────────────────────
+    -- Utility: append-only guard trigger function
+    -- Applied to every audit table. Any attempt to UPDATE or DELETE a row
+    -- raises an exception, satisfying Req 9 C7 and Req 12 C4/C5.
+    -- ─────────────────────────────────────────────────────────────────────
+    CREATE OR REPLACE FUNCTION prevent_audit_mutation()
+      RETURNS TRIGGER
+      LANGUAGE plpgsql
+      SECURITY DEFINER
+    AS $$
+    BEGIN
+      RAISE EXCEPTION
+        'Audit table ''%'' is append-only: % operations are prohibited. '
+        'Attempted on row with id = %.',
+        TG_TABLE_NAME,
+        TG_OP,
+        COALESCE(OLD.id::text, '(unknown)');
+      RETURN NULL; -- unreachable, satisfies PL/pgSQL return requirement
+    END;
+    $$;
+
+    -- ─────────────────────────────────────────────────────────────────────
+    -- Table: security_anomaly_audit
+    -- Stores SECURITY_ANOMALY events and acknowledgement records.
+    -- Req 9 C7: append-only, retained ≥ 365 days, no UPDATE/DELETE.
+    -- ─────────────────────────────────────────────────────────────────────
+    CREATE TABLE IF NOT EXISTS security_anomaly_audit (
+      id                  BIGSERIAL PRIMARY KEY,
+      event_id            UUID        NOT NULL,           -- correlates to Kafka event
+      alert_type          TEXT        NOT NULL DEFAULT 'SECURITY_ANOMALY',
+      iec62443_zone       TEXT        NOT NULL,           -- Zone 1/2/3/4
+      reconstruction_error DOUBLE PRECISION NOT NULL,
+      threshold_value     DOUBLE PRECISION NOT NULL,
+      timestamp_utc       TIMESTAMPTZ NOT NULL,
+      acknowledged_by     TEXT,                           -- Security_Officer identity
+      acknowledged_at     TIMESTAMPTZ,
+      escalated_to        TEXT,                           -- next on-call officer
+      escalated_at        TIMESTAMPTZ,
+      raw_window_artifact_id TEXT,                        -- MinIO WORM artifact ref
+      created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+      retain_until        TIMESTAMPTZ NOT NULL
+                            GENERATED ALWAYS AS (created_at + INTERVAL '365 days') STORED
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_security_anomaly_audit_event_id
+      ON security_anomaly_audit (event_id);
+    CREATE INDEX IF NOT EXISTS idx_security_anomaly_audit_timestamp
+      ON security_anomaly_audit (timestamp_utc);
+    CREATE INDEX IF NOT EXISTS idx_security_anomaly_audit_retain_until
+      ON security_anomaly_audit (retain_until);
+
+    -- Append-only guard: block UPDATE and DELETE
+    CREATE OR REPLACE TRIGGER trg_security_anomaly_audit_no_update
+      BEFORE UPDATE ON security_anomaly_audit
+      FOR EACH ROW EXECUTE FUNCTION prevent_audit_mutation();
+
+    CREATE OR REPLACE TRIGGER trg_security_anomaly_audit_no_delete
+      BEFORE DELETE ON security_anomaly_audit
+      FOR EACH ROW EXECUTE FUNCTION prevent_audit_mutation();
+
+    -- ─────────────────────────────────────────────────────────────────────
+    -- Table: model_inference_audit
+    -- Records every ML inference result for traceability.
+    -- Req 11 C2/C5: model version + input hash + output + timestamp, 365 days.
+    -- ─────────────────────────────────────────────────────────────────────
+    CREATE TABLE IF NOT EXISTS model_inference_audit (
+      id                  BIGSERIAL PRIMARY KEY,
+      inference_id        UUID        NOT NULL,
+      model_name          TEXT        NOT NULL,           -- e.g. defect_detector
+      model_version       TEXT        NOT NULL,           -- MAJOR.MINOR.PATCH (Req 11 C1)
+      input_feature_hash  TEXT        NOT NULL,           -- SHA-256 of input vector
+      output_value        JSONB       NOT NULL,           -- scalar or structured output
+      edge_node_id        TEXT,
+      fl_round_id         TEXT,                           -- FL round ref (Req 11 C4)
+      pre_update_version  TEXT,                           -- for FL rollback tracking
+      post_update_version TEXT,
+      timestamp_utc       TIMESTAMPTZ NOT NULL,
+      created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+      retain_until        TIMESTAMPTZ NOT NULL
+                            GENERATED ALWAYS AS (created_at + INTERVAL '365 days') STORED
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_model_inference_audit_inference_id
+      ON model_inference_audit (inference_id);
+    CREATE INDEX IF NOT EXISTS idx_model_inference_audit_model_version
+      ON model_inference_audit (model_name, model_version);
+    CREATE INDEX IF NOT EXISTS idx_model_inference_audit_timestamp
+      ON model_inference_audit (timestamp_utc);
+    CREATE INDEX IF NOT EXISTS idx_model_inference_audit_retain_until
+      ON model_inference_audit (retain_until);
+
+    -- Append-only guard
+    CREATE OR REPLACE TRIGGER trg_model_inference_audit_no_update
+      BEFORE UPDATE ON model_inference_audit
+      FOR EACH ROW EXECUTE FUNCTION prevent_audit_mutation();
+
+    CREATE OR REPLACE TRIGGER trg_model_inference_audit_no_delete
+      BEFORE DELETE ON model_inference_audit
+      FOR EACH ROW EXECUTE FUNCTION prevent_audit_mutation();
+
+    -- ─────────────────────────────────────────────────────────────────────
+    -- Table: authorization_audit
+    -- Logs every human authorization / rejection event on advisory outputs.
+    -- Req 12 C4/C5: append-only, no UPDATE/DELETE, retained ≥ 365 days.
+    -- ─────────────────────────────────────────────────────────────────────
+    CREATE TABLE IF NOT EXISTS authorization_audit (
+      id                  BIGSERIAL PRIMARY KEY,
+      event_id            UUID        NOT NULL,           -- advisory identifier
+      advisory_type       TEXT        NOT NULL,           -- MAINTENANCE_ADVISORY, etc.
+      action              TEXT        NOT NULL            -- 'AUTHORIZE' | 'REJECT'
+                            CHECK (action IN ('AUTHORIZE', 'REJECT')),
+      operator_identity   TEXT        NOT NULL,           -- Operations_Controller id
+      operator_role       TEXT        NOT NULL,           -- RBAC role
+      advisory_payload    JSONB,                          -- advisory snapshot at decision time
+      timestamp_utc       TIMESTAMPTZ NOT NULL,
+      escalated_from      TEXT,                           -- if escalated, primary controller
+      created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+      retain_until        TIMESTAMPTZ NOT NULL
+                            GENERATED ALWAYS AS (created_at + INTERVAL '365 days') STORED
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_authorization_audit_event_id
+      ON authorization_audit (event_id);
+    CREATE INDEX IF NOT EXISTS idx_authorization_audit_operator
+      ON authorization_audit (operator_identity);
+    CREATE INDEX IF NOT EXISTS idx_authorization_audit_timestamp
+      ON authorization_audit (timestamp_utc);
+    CREATE INDEX IF NOT EXISTS idx_authorization_audit_retain_until
+      ON authorization_audit (retain_until);
+
+    -- Append-only guard
+    CREATE OR REPLACE TRIGGER trg_authorization_audit_no_update
+      BEFORE UPDATE ON authorization_audit
+      FOR EACH ROW EXECUTE FUNCTION prevent_audit_mutation();
+
+    CREATE OR REPLACE TRIGGER trg_authorization_audit_no_delete
+      BEFORE DELETE ON authorization_audit
+      FOR EACH ROW EXECUTE FUNCTION prevent_audit_mutation();
+
+    -- ─────────────────────────────────────────────────────────────────────
+    -- Table: system_event_audit
+    -- General system events (FEED_UNAVAILABLE, ROUND_ABORTED, etc.)
+    -- that must be retained for compliance (Design §10.4).
+    -- ─────────────────────────────────────────────────────────────────────
+    CREATE TABLE IF NOT EXISTS system_event_audit (
+      id                  BIGSERIAL PRIMARY KEY,
+      event_type          TEXT        NOT NULL,
+      source_component    TEXT        NOT NULL,
+      payload             JSONB       NOT NULL,
+      timestamp_utc       TIMESTAMPTZ NOT NULL,
+      created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+      retain_until        TIMESTAMPTZ NOT NULL
+                            GENERATED ALWAYS AS (created_at + INTERVAL '365 days') STORED
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_system_event_audit_event_type
+      ON system_event_audit (event_type);
+    CREATE INDEX IF NOT EXISTS idx_system_event_audit_timestamp
+      ON system_event_audit (timestamp_utc);
+
+    -- Append-only guard
+    CREATE OR REPLACE TRIGGER trg_system_event_audit_no_update
+      BEFORE UPDATE ON system_event_audit
+      FOR EACH ROW EXECUTE FUNCTION prevent_audit_mutation();
+
+    CREATE OR REPLACE TRIGGER trg_system_event_audit_no_delete
+      BEFORE DELETE ON system_event_audit
+      FOR EACH ROW EXECUTE FUNCTION prevent_audit_mutation();
+
+    -- ─────────────────────────────────────────────────────────────────────
+    -- Grant: application user gets INSERT only on audit tables
+    -- No UPDATE or DELETE privileges are ever granted (defence-in-depth).
+    -- ─────────────────────────────────────────────────────────────────────
+    GRANT USAGE ON SCHEMA public TO railos_app;
+    GRANT SELECT, INSERT ON ALL TABLES IN SCHEMA public TO railos_app;
+    GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO railos_app;
+    -- Explicitly deny UPDATE and DELETE (belt-and-suspenders alongside triggers)
+    REVOKE UPDATE, DELETE ON ALL TABLES IN SCHEMA public FROM railos_app;
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # railos_hazard — Safety hazard register
+  # Design §13.2: append-only hazard records; hazards are NEVER deleted/updated.
+  # ═══════════════════════════════════════════════════════════════════════════
+  railos_hazard.sql: |
+    -- Shared append-only guard (same function, redeclared per DB)
+    CREATE OR REPLACE FUNCTION prevent_audit_mutation()
+      RETURNS TRIGGER
+      LANGUAGE plpgsql
+      SECURITY DEFINER
+    AS $$
+    BEGIN
+      RAISE EXCEPTION
+        'Table ''%'' is append-only: % operations are prohibited. Row id = %.',
+        TG_TABLE_NAME, TG_OP,
+        COALESCE(OLD.id::text, '(unknown)');
+      RETURN NULL;
+    END;
+    $$;
+
+    -- ─────────────────────────────────────────────────────────────────────
+    -- Table: hazard_register
+    -- Append-only safety hazard log for the RailOS corridor.
+    -- Each hazard record captures the detection event, risk tier,
+    -- and any linked advisory identifiers.
+    -- Design §13.2 specifies this is an append-only table.
+    -- ─────────────────────────────────────────────────────────────────────
+    CREATE TABLE IF NOT EXISTS hazard_register (
+      id                  BIGSERIAL PRIMARY KEY,
+      hazard_id           UUID        NOT NULL UNIQUE,
+      source_component    TEXT        NOT NULL,    -- e.g. defect_detector, maintenance_engine
+      hazard_type         TEXT        NOT NULL,    -- crack, bearing_failure, schedule_conflict, etc.
+      asset_id            TEXT        NOT NULL,    -- track segment, loco, bogie identifier
+      location_geojson    JSONB,                   -- GeoJSON point/feature (lat/lon)
+      severity            TEXT        NOT NULL
+                            CHECK (severity IN ('LOW', 'MEDIUM', 'HIGH', 'CRITICAL')),
+      risk_score          DOUBLE PRECISION,
+      risk_tier           SMALLINT    CHECK (risk_tier BETWEEN 1 AND 4),
+      linked_advisory_id  UUID,                    -- DEFECT_ALERT / MAINTENANCE_ADVISORY id
+      linked_model_version TEXT,                   -- model version that raised this hazard
+      description         TEXT        NOT NULL,
+      status              TEXT        NOT NULL DEFAULT 'OPEN'
+                            CHECK (status IN ('OPEN', 'ACKNOWLEDGED', 'RESOLVED', 'ARCHIVED')),
+      -- Status changes are recorded as new rows (event-sourced pattern).
+      -- This field is set at INSERT time only; updates require a new row.
+      previous_hazard_id  BIGINT      REFERENCES hazard_register(id),
+      detected_at         TIMESTAMPTZ NOT NULL,
+      created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+      retain_until        TIMESTAMPTZ NOT NULL
+                            GENERATED ALWAYS AS (created_at + INTERVAL '365 days') STORED
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_hazard_register_hazard_id
+      ON hazard_register (hazard_id);
+    CREATE INDEX IF NOT EXISTS idx_hazard_register_asset_id
+      ON hazard_register (asset_id);
+    CREATE INDEX IF NOT EXISTS idx_hazard_register_severity
+      ON hazard_register (severity);
+    CREATE INDEX IF NOT EXISTS idx_hazard_register_status
+      ON hazard_register (status);
+    CREATE INDEX IF NOT EXISTS idx_hazard_register_detected_at
+      ON hazard_register (detected_at);
+    CREATE INDEX IF NOT EXISTS idx_hazard_register_retain_until
+      ON hazard_register (retain_until);
+
+    -- Append-only guard (Design §13.2)
+    CREATE OR REPLACE TRIGGER trg_hazard_register_no_update
+      BEFORE UPDATE ON hazard_register
+      FOR EACH ROW EXECUTE FUNCTION prevent_audit_mutation();
+
+    CREATE OR REPLACE TRIGGER trg_hazard_register_no_delete
+      BEFORE DELETE ON hazard_register
+      FOR EACH ROW EXECUTE FUNCTION prevent_audit_mutation();
+
+    -- ─────────────────────────────────────────────────────────────────────
+    -- Grants
+    -- ─────────────────────────────────────────────────────────────────────
+    GRANT USAGE ON SCHEMA public TO railos_app;
+    GRANT SELECT, INSERT ON ALL TABLES IN SCHEMA public TO railos_app;
+    GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO railos_app;
+    REVOKE UPDATE, DELETE ON ALL TABLES IN SCHEMA public FROM railos_app;
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # railos_registry — Asset registry (Design §7.1 Layer A)
+  # Note: PostGIS extension (task 1.6) will be added later; base tables here.
+  # ═══════════════════════════════════════════════════════════════════════════
+  railos_registry.sql: |
+    -- ─────────────────────────────────────────────────────────────────────
+    -- Table: asset_registry
+    -- Stores all physical assets: track segments, bridges, tunnels, stations,
+    -- locomotives, bogies, sensors.
+    -- Design §7.1 Layer A: assetId, type, location_geojson, spec_version,
+    -- maintenance_history.
+    -- PostGIS geometry columns will be added by task 1.6 (ALTER TABLE).
+    -- ─────────────────────────────────────────────────────────────────────
+    CREATE TABLE IF NOT EXISTS asset_registry (
+      id                  BIGSERIAL PRIMARY KEY,
+      asset_id            TEXT        NOT NULL UNIQUE,  -- human-readable identifier
+      asset_uuid          UUID        NOT NULL UNIQUE DEFAULT gen_random_uuid(),
+      asset_type          TEXT        NOT NULL
+                            CHECK (asset_type IN (
+                              'track_segment', 'bridge', 'tunnel', 'station',
+                              'locomotive', 'bogie', 'sensor', 'rfid_reader',
+                              'camera', 'edge_node', 'other'
+                            )),
+      name                TEXT        NOT NULL,
+      location_geojson    JSONB,           -- GeoJSON Point or LineString
+                                           -- PostGIS geometry column added by task 1.6
+      spec_version        TEXT,            -- IFC 4.x BIM version reference
+      manufacturer        TEXT,
+      install_date        DATE,
+      decommission_date   DATE,
+      attributes          JSONB,           -- extensible asset-specific properties
+      is_active           BOOLEAN     NOT NULL DEFAULT TRUE,
+      created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_asset_registry_asset_id
+      ON asset_registry (asset_id);
+    CREATE INDEX IF NOT EXISTS idx_asset_registry_asset_type
+      ON asset_registry (asset_type);
+    CREATE INDEX IF NOT EXISTS idx_asset_registry_is_active
+      ON asset_registry (is_active);
+
+    -- ─────────────────────────────────────────────────────────────────────
+    -- Table: asset_maintenance_history
+    -- Append-only log of all maintenance events for each asset.
+    -- Provides audit trail for engineering team (Design §7.1 Layer A).
+    -- ─────────────────────────────────────────────────────────────────────
+    CREATE OR REPLACE FUNCTION prevent_audit_mutation()
+      RETURNS TRIGGER
+      LANGUAGE plpgsql
+      SECURITY DEFINER
+    AS $$
+    BEGIN
+      RAISE EXCEPTION
+        'Table ''%'' is append-only: % operations are prohibited. Row id = %.',
+        TG_TABLE_NAME, TG_OP,
+        COALESCE(OLD.id::text, '(unknown)');
+      RETURN NULL;
+    END;
+    $$;
+
+    CREATE TABLE IF NOT EXISTS asset_maintenance_history (
+      id                  BIGSERIAL PRIMARY KEY,
+      asset_id            TEXT        NOT NULL REFERENCES asset_registry(asset_id),
+      maintenance_type    TEXT        NOT NULL,  -- scheduled, emergency, predictive
+      performed_by        TEXT        NOT NULL,
+      advisory_id         UUID,                  -- linked MAINTENANCE_ADVISORY if any
+      hazard_id           UUID,                  -- linked hazard_register hazard_id
+      description         TEXT        NOT NULL,
+      outcome             TEXT,
+      performed_at        TIMESTAMPTZ NOT NULL,
+      created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+      retain_until        TIMESTAMPTZ NOT NULL
+                            GENERATED ALWAYS AS (created_at + INTERVAL '365 days') STORED
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_asset_maintenance_history_asset_id
+      ON asset_maintenance_history (asset_id);
+    CREATE INDEX IF NOT EXISTS idx_asset_maintenance_history_performed_at
+      ON asset_maintenance_history (performed_at);
+
+    -- Append-only: maintenance history must not be altered
+    CREATE OR REPLACE TRIGGER trg_asset_maintenance_history_no_update
+      BEFORE UPDATE ON asset_maintenance_history
+      FOR EACH ROW EXECUTE FUNCTION prevent_audit_mutation();
+
+    CREATE OR REPLACE TRIGGER trg_asset_maintenance_history_no_delete
+      BEFORE DELETE ON asset_maintenance_history
+      FOR EACH ROW EXECUTE FUNCTION prevent_audit_mutation();
+
+    -- updated_at auto-update for asset_registry (this table IS mutable)
+    CREATE OR REPLACE FUNCTION update_updated_at()
+      RETURNS TRIGGER LANGUAGE plpgsql AS $$
+    BEGIN
+      NEW.updated_at = now();
+      RETURN NEW;
+    END;
+    $$;
+
+    CREATE OR REPLACE TRIGGER trg_asset_registry_updated_at
+      BEFORE UPDATE ON asset_registry
+      FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+
+    -- ─────────────────────────────────────────────────────────────────────
+    -- Grants
+    -- ─────────────────────────────────────────────────────────────────────
+    GRANT USAGE ON SCHEMA public TO railos_app;
+    GRANT SELECT, INSERT, UPDATE ON asset_registry TO railos_app;
+    GRANT SELECT, INSERT ON asset_maintenance_history TO railos_app;
+    GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO railos_app;
+    REVOKE DELETE ON ALL TABLES IN SCHEMA public FROM railos_app;
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # railos_traceability — ML model traceability matrix
+  # Design §13.1: traceability matrix stored in PostgreSQL
+  # ═══════════════════════════════════════════════════════════════════════════
+  railos_traceability.sql: |
+    -- Shared append-only guard
+    CREATE OR REPLACE FUNCTION prevent_audit_mutation()
+      RETURNS TRIGGER
+      LANGUAGE plpgsql
+      SECURITY DEFINER
+    AS $$
+    BEGIN
+      RAISE EXCEPTION
+        'Table ''%'' is append-only: % operations are prohibited. Row id = %.',
+        TG_TABLE_NAME, TG_OP,
+        COALESCE(OLD.id::text, '(unknown)');
+      RETURN NULL;
+    END;
+    $$;
+
+    -- ─────────────────────────────────────────────────────────────────────
+    -- Table: model_registry
+    -- Canonical record of every trained and deployed model version.
+    -- Req 11 C1: MAJOR.MINOR.PATCH version identifiers.
+    -- ─────────────────────────────────────────────────────────────────────
+    CREATE TABLE IF NOT EXISTS model_registry (
+      id                  BIGSERIAL PRIMARY KEY,
+      model_id            UUID        NOT NULL UNIQUE DEFAULT gen_random_uuid(),
+      model_name          TEXT        NOT NULL,       -- defect_detector, maintenance_engine, etc.
+      version             TEXT        NOT NULL,       -- MAJOR.MINOR.PATCH
+      mlflow_run_id       TEXT,                       -- MLflow experiment run ID
+      artifact_uri        TEXT,                       -- S3/MinIO artifact location
+      framework           TEXT,                       -- TensorRT, TensorFlow Lite, PyTorch, etc.
+      training_dataset_ref TEXT,                      -- dataset identifier / hash
+      fl_round_id         TEXT,                       -- FL aggregation round (if FL-trained)
+      validation_metrics  JSONB,                      -- precision, recall, MAE, etc.
+      sbom_ref            TEXT,                       -- CycloneDX SBOM artifact reference
+      signed_by           TEXT,                       -- cosign signer identity (Req 38)
+      status              TEXT        NOT NULL DEFAULT 'CANDIDATE'
+                            CHECK (status IN ('CANDIDATE', 'DEPLOYED', 'ROLLED_BACK', 'ARCHIVED')),
+      deployed_at         TIMESTAMPTZ,
+      rolled_back_at      TIMESTAMPTZ,
+      rollback_reason     TEXT,
+      created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_model_registry_model_name
+      ON model_registry (model_name, version);
+    CREATE INDEX IF NOT EXISTS idx_model_registry_status
+      ON model_registry (status);
+    CREATE INDEX IF NOT EXISTS idx_model_registry_fl_round
+      ON model_registry (fl_round_id);
+
+    -- ─────────────────────────────────────────────────────────────────────
+    -- Table: traceability_matrix
+    -- Links every advisory output back to: model version, input hash,
+    -- authorization event, and resulting action.
+    -- Design §13.1: full traceability chain.
+    -- ─────────────────────────────────────────────────────────────────────
+    CREATE TABLE IF NOT EXISTS traceability_matrix (
+      id                  BIGSERIAL PRIMARY KEY,
+      trace_id            UUID        NOT NULL UNIQUE DEFAULT gen_random_uuid(),
+      -- Source inference
+      inference_id        UUID        NOT NULL,       -- FK to railos_audit.model_inference_audit
+      model_name          TEXT        NOT NULL,
+      model_version       TEXT        NOT NULL,
+      input_feature_hash  TEXT        NOT NULL,
+      -- Advisory
+      advisory_id         UUID,                       -- DEFECT_ALERT / MAINTENANCE_ADVISORY id
+      advisory_type       TEXT,
+      -- Authorization (FK to railos_audit.authorization_audit)
+      authorization_event_id UUID,
+      authorization_action TEXT
+                            CHECK (authorization_action IN ('AUTHORIZE', 'REJECT', NULL)),
+      authorizing_operator TEXT,
+      -- Outcome
+      downstream_action   TEXT,                       -- maintenance dispatch ref, escalation ref
+      -- Hazard linkage (FK to railos_hazard.hazard_register)
+      hazard_id           UUID,
+      -- Timestamps
+      inference_timestamp TIMESTAMPTZ NOT NULL,
+      authorization_timestamp TIMESTAMPTZ,
+      created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+      retain_until        TIMESTAMPTZ NOT NULL
+                            GENERATED ALWAYS AS (created_at + INTERVAL '365 days') STORED
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_traceability_matrix_inference_id
+      ON traceability_matrix (inference_id);
+    CREATE INDEX IF NOT EXISTS idx_traceability_matrix_advisory_id
+      ON traceability_matrix (advisory_id);
+    CREATE INDEX IF NOT EXISTS idx_traceability_matrix_model_version
+      ON traceability_matrix (model_name, model_version);
+    CREATE INDEX IF NOT EXISTS idx_traceability_matrix_retain_until
+      ON traceability_matrix (retain_until);
+
+    -- Append-only: traceability records must not be altered
+    CREATE OR REPLACE TRIGGER trg_traceability_matrix_no_update
+      BEFORE UPDATE ON traceability_matrix
+      FOR EACH ROW EXECUTE FUNCTION prevent_audit_mutation();
+
+    CREATE OR REPLACE TRIGGER trg_traceability_matrix_no_delete
+      BEFORE DELETE ON traceability_matrix
+      FOR EACH ROW EXECUTE FUNCTION prevent_audit_mutation();
+
+    -- ─────────────────────────────────────────────────────────────────────
+    -- Table: data_lineage
+    -- Records dataset provenance for Req 13 C4 (data lineage reports).
+    -- ─────────────────────────────────────────────────────────────────────
+    CREATE TABLE IF NOT EXISTS data_lineage (
+      id                  BIGSERIAL PRIMARY KEY,
+      lineage_id          UUID        NOT NULL UNIQUE DEFAULT gen_random_uuid(),
+      dataset_name        TEXT        NOT NULL,
+      source_edge_node_id TEXT        NOT NULL,
+      collection_start    TIMESTAMPTZ NOT NULL,
+      collection_end      TIMESTAMPTZ NOT NULL,
+      transformations     JSONB       NOT NULL,  -- array of transformation descriptions
+      anonymized          BOOLEAN     NOT NULL DEFAULT FALSE,
+      cross_zone          BOOLEAN     NOT NULL DEFAULT FALSE,
+      retained_by         TEXT,                  -- Governance_Officer who requested
+      created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_data_lineage_dataset_name
+      ON data_lineage (dataset_name);
+    CREATE INDEX IF NOT EXISTS idx_data_lineage_source_edge_node
+      ON data_lineage (source_edge_node_id);
+
+    -- ─────────────────────────────────────────────────────────────────────
+    -- Grants
+    -- ─────────────────────────────────────────────────────────────────────
+    GRANT USAGE ON SCHEMA public TO railos_app;
+    GRANT SELECT, INSERT ON ALL TABLES IN SCHEMA public TO railos_app;
+    GRANT UPDATE ON model_registry TO railos_app;  -- status transitions are allowed
+    GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO railos_app;
+    REVOKE DELETE ON ALL TABLES IN SCHEMA public FROM railos_app;

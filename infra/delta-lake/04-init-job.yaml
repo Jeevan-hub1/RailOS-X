@@ -1,0 +1,331 @@
+---
+# Delta Lake Initialisation Job
+#
+# Runs once after the MinIO cluster and railos-delta-lake bucket are healthy to
+# create the four Delta Lake tables used by the RailOS archival pipeline:
+#
+#   1. raw_sensor_events   — canonical sensor event archive (Req 1 C4, Design §4.3)
+#                            partitioned by sensor_type / date
+#   2. inference_audit     — ML inference audit records (Req 11, Design §12)
+#                            partitioned by date
+#   3. security_anomaly    — SECURITY_ANOMALY events + ack audit (Req 9 C7, Design §6.6)
+#                            partitioned by date
+#   4. model_artifacts     — model version metadata + artifact pointers (Req 11 C1)
+#                            not partitioned (low-volume, key lookups)
+#
+# The init script (init_delta_tables.py) is loaded from the ConfigMap
+# delta-lake-init-scripts and executed via PySpark inside the railos/pyspark-delta
+# container image (see Dockerfile).
+#
+# This Job is IDEMPOTENT — the Python script uses CREATE TABLE IF NOT EXISTS
+# semantics (delta.tables.DeltaTable.createIfNotExists).  Re-running the Job
+# after a partial failure is safe.
+#
+# Prerequisites (must be healthy before applying this Job):
+#   - infra/minio/ stack (MinIO 4-node cluster)
+#   - infra/minio/06-bucket-init-job.yaml (railos-delta-lake bucket + versioning)
+#
+# Task 4.9 (compaction/partitioning CronJob) will reference the same table paths
+# defined in the delta-lake-init-config ConfigMap.
+#
+# Satisfies:
+#   - Req 1 C4:      Archive storage layer for raw sensor events
+#   - Design §4.2:   Delta Lake (Parquet) on MinIO S3-compatible endpoint
+#   - Design §10.4:  Delta Lake cold-storage tier for all data categories
+#   - Req 9 C7:      Append-only security anomaly storage (365-day retention)
+#   - Req 11 C1–C5:  Model governance and inference audit log storage
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: delta-lake-init
+  namespace: railos
+  labels:
+    app: delta-lake-init
+    app.kubernetes.io/name: delta-lake-init
+    app.kubernetes.io/component: storage-init
+    app.kubernetes.io/part-of: railos-pilot
+  annotations:
+    description: "One-time Delta Lake table creation on MinIO for RailOS archival pipeline"
+    # Re-run with:
+    #   kubectl delete job delta-lake-init -n railos
+    #   kubectl apply -f infra/delta-lake/04-init-job.yaml
+spec:
+  backoffLimit: 5
+  # Clean up 2 hours after completion so logs remain available for inspection.
+  ttlSecondsAfterFinished: 7200
+  template:
+    metadata:
+      labels:
+        app: delta-lake-init
+        app.kubernetes.io/name: delta-lake-init
+        app.kubernetes.io/component: storage-init
+        app.kubernetes.io/part-of: railos-pilot
+    spec:
+      restartPolicy: OnFailure
+      serviceAccountName: delta-lake-init
+
+      # ─── Security Context ────────────────────────────────────────────────
+      # Restricted Pod Security Admission profile (Req 39 / Design §9.3)
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+
+      # ─── Wait for MinIO ──────────────────────────────────────────────────
+      # Lightweight init container that polls MinIO health before PySpark starts.
+      # Avoids a 2-minute Spark startup only to fail on S3 connectivity.
+      initContainers:
+        - name: wait-for-minio
+          image: curlimages/curl:8.7.1
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              MINIO_URL="${MINIO_ENDPOINT}"
+              echo "Waiting for MinIO at ${MINIO_URL}/minio/health/ready ..."
+              for i in $(seq 1 36); do
+                HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+                  "${MINIO_URL}/minio/health/ready" 2>/dev/null || echo "000")
+                if [ "${HTTP_CODE}" = "200" ]; then
+                  echo "  MinIO ready (attempt ${i})."
+                  exit 0
+                fi
+                echo "  Attempt ${i}/36: HTTP ${HTTP_CODE}. Retrying in 5s..."
+                sleep 5
+              done
+              echo "ERROR: MinIO did not become ready in time. Aborting."
+              exit 1
+          env:
+            - name: MINIO_ENDPOINT
+              valueFrom:
+                configMapKeyRef:
+                  name: delta-lake-init-config
+                  key: MINIO_ENDPOINT
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            runAsNonRoot: true
+            runAsUser: 1000
+
+      containers:
+        - name: pyspark-delta-init
+          # Built from infra/delta-lake/Dockerfile.
+          # Replace the registry/tag with your internal registry after building.
+          image: railos/pyspark-delta:3.5.1-delta3.2.0
+          imagePullPolicy: IfNotPresent
+
+          command:
+            - python3
+            - /opt/railos/init_delta_tables.py
+
+          env:
+            # ── S3A / MinIO credentials ────────────────────────────────────
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: delta-lake-init-secrets
+                  key: AWS_ACCESS_KEY_ID
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: delta-lake-init-secrets
+                  key: AWS_SECRET_ACCESS_KEY
+
+            # ── Config from ConfigMap ──────────────────────────────────────
+            - name: MINIO_ENDPOINT
+              valueFrom:
+                configMapKeyRef:
+                  name: delta-lake-init-config
+                  key: MINIO_ENDPOINT
+            - name: S3A_PATH_STYLE_ACCESS
+              valueFrom:
+                configMapKeyRef:
+                  name: delta-lake-init-config
+                  key: S3A_PATH_STYLE_ACCESS
+            - name: DELTA_TABLE_RAW_SENSOR_EVENTS
+              valueFrom:
+                configMapKeyRef:
+                  name: delta-lake-init-config
+                  key: DELTA_TABLE_RAW_SENSOR_EVENTS
+            - name: DELTA_TABLE_INFERENCE_AUDIT
+              valueFrom:
+                configMapKeyRef:
+                  name: delta-lake-init-config
+                  key: DELTA_TABLE_INFERENCE_AUDIT
+            - name: DELTA_TABLE_SECURITY_ANOMALY
+              valueFrom:
+                configMapKeyRef:
+                  name: delta-lake-init-config
+                  key: DELTA_TABLE_SECURITY_ANOMALY
+            - name: DELTA_TABLE_MODEL_ARTIFACTS
+              valueFrom:
+                configMapKeyRef:
+                  name: delta-lake-init-config
+                  key: DELTA_TABLE_MODEL_ARTIFACTS
+            - name: SPARK_MASTER
+              valueFrom:
+                configMapKeyRef:
+                  name: delta-lake-init-config
+                  key: SPARK_MASTER
+            - name: SPARK_DRIVER_MEMORY
+              valueFrom:
+                configMapKeyRef:
+                  name: delta-lake-init-config
+                  key: SPARK_DRIVER_MEMORY
+            - name: SPARK_LOG_LEVEL
+              valueFrom:
+                configMapKeyRef:
+                  name: delta-lake-init-config
+                  key: SPARK_LOG_LEVEL
+
+            # Spark writes temp files to /tmp
+            - name: SPARK_LOCAL_DIRS
+              value: "/tmp/spark-local"
+            - name: HOME
+              value: "/tmp"
+
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "2Gi"
+            limits:
+              cpu: "2000m"
+              memory: "4Gi"
+
+          volumeMounts:
+            # Spark temp / local shuffle dir
+            - name: spark-tmp
+              mountPath: /tmp
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: false   # Spark writes JARs to a temp staging dir at startup
+            runAsNonRoot: true
+            runAsUser: 1000
+
+      volumes:
+        - name: spark-tmp
+          emptyDir: {}
+
+---
+# ─── CronJob Skeleton for Future Compaction (Task 4.9) ───────────────────────
+#
+# This CronJob skeleton is intentionally SUSPENDED (suspend: true).
+# Task 4.9 will enable it and implement the compaction/OPTIMIZE/VACUUM logic.
+# It is included here so that the table paths and S3A credentials are already
+# wired up correctly before Task 4.9 begins.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: delta-lake-compaction
+  namespace: railos
+  labels:
+    app: delta-lake-compaction
+    app.kubernetes.io/name: delta-lake-compaction
+    app.kubernetes.io/component: storage-compaction
+    app.kubernetes.io/part-of: railos-pilot
+  annotations:
+    description: >
+      Placeholder CronJob for Delta Lake OPTIMIZE + VACUUM (Task 4.9).
+      Currently suspended — enable and implement compaction logic in Task 4.9.
+spec:
+  # Run daily at 02:00 UTC once enabled (Task 4.9 will adjust this schedule).
+  schedule: "0 2 * * *"
+  # Suspended until Task 4.9 implements the compaction script.
+  suspend: true
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      ttlSecondsAfterFinished: 7200
+      template:
+        metadata:
+          labels:
+            app: delta-lake-compaction
+            app.kubernetes.io/part-of: railos-pilot
+        spec:
+          restartPolicy: OnFailure
+          serviceAccountName: delta-lake-init   # Reuse same SA; Task 4.9 may create its own
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            fsGroup: 1000
+          containers:
+            - name: pyspark-delta-compaction
+              # Task 4.9: replace this placeholder command with the compaction script.
+              image: railos/pyspark-delta:3.5.1-delta3.2.0
+              imagePullPolicy: IfNotPresent
+              command:
+                - echo
+                - "Compaction not yet implemented — see Task 4.9"
+              env:
+                - name: AWS_ACCESS_KEY_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: delta-lake-init-secrets
+                      key: AWS_ACCESS_KEY_ID
+                - name: AWS_SECRET_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: delta-lake-init-secrets
+                      key: AWS_SECRET_ACCESS_KEY
+                - name: MINIO_ENDPOINT
+                  valueFrom:
+                    configMapKeyRef:
+                      name: delta-lake-init-config
+                      key: MINIO_ENDPOINT
+                - name: S3A_PATH_STYLE_ACCESS
+                  valueFrom:
+                    configMapKeyRef:
+                      name: delta-lake-init-config
+                      key: S3A_PATH_STYLE_ACCESS
+                - name: DELTA_TABLE_RAW_SENSOR_EVENTS
+                  valueFrom:
+                    configMapKeyRef:
+                      name: delta-lake-init-config
+                      key: DELTA_TABLE_RAW_SENSOR_EVENTS
+                - name: DELTA_TABLE_INFERENCE_AUDIT
+                  valueFrom:
+                    configMapKeyRef:
+                      name: delta-lake-init-config
+                      key: DELTA_TABLE_INFERENCE_AUDIT
+                - name: DELTA_TABLE_SECURITY_ANOMALY
+                  valueFrom:
+                    configMapKeyRef:
+                      name: delta-lake-init-config
+                      key: DELTA_TABLE_SECURITY_ANOMALY
+                - name: DELTA_TABLE_MODEL_ARTIFACTS
+                  valueFrom:
+                    configMapKeyRef:
+                      name: delta-lake-init-config
+                      key: DELTA_TABLE_MODEL_ARTIFACTS
+                - name: HOME
+                  value: "/tmp"
+              resources:
+                requests:
+                  cpu: "1000m"
+                  memory: "4Gi"
+                limits:
+                  cpu: "4000m"
+                  memory: "8Gi"
+              volumeMounts:
+                - name: spark-tmp
+                  mountPath: /tmp
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: ["ALL"]
+                readOnlyRootFilesystem: false
+                runAsNonRoot: true
+                runAsUser: 1000
+          volumes:
+            - name: spark-tmp
+              emptyDir: {}

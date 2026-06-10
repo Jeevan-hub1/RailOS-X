@@ -1,0 +1,182 @@
+---
+# InfluxDB 3.0 Configuration — ConfigMap
+#
+# Satisfies:
+#   - Requirement 1 C4:   90-day raw sensor event retention in InfluxDB 3.0
+#   - Requirement 8 C1:   Real-time state store for Digital Twin (position refresh ≤5s)
+#   - Requirement 15/16:  RPO ≤60s, RTO <5 min (hot standby + WAL replication)
+#   - Design §10.1:       InfluxDB 3.0 Primary + hot standby, continuous WAL replication
+#
+# This ConfigMap provides:
+#   - Primary InfluxDB 3.0 configuration (influxdb.toml)
+#   - WAL replication settings for streaming to standby
+#   - Retention policy defaults (90-day hot storage for sensor events)
+#   - Prometheus metrics exporter configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: influxdb-config
+  namespace: railos
+  labels:
+    app: influxdb
+    app.kubernetes.io/name: influxdb
+    app.kubernetes.io/component: time-series-store
+    app.kubernetes.io/part-of: railos-pilot
+    app.kubernetes.io/version: "3.0.0"
+data:
+  # ─── Primary InfluxDB 3.0 configuration ─────────────────────────────────────
+  # InfluxDB 3.0 uses a TOML-based config file.
+  config.toml: |
+    # InfluxDB 3.0 configuration for RailOS Pilot System
+    # Primary node configuration — applies to the primary StatefulSet
+
+    [http]
+    # HTTP API bind address
+    bind-address = "0.0.0.0:8086"
+    # Request timeout (Digital Twin must update in ≤5s; keep HTTP timeout generous)
+    request-timeout = "30s"
+    # Maximum concurrent HTTP connections
+    max-connection-limit = 500
+
+    [meta]
+    # Metadata directory — persisted on PVC
+    dir = "/var/lib/influxdb3/meta"
+
+    [data]
+    # Time-series data directory — persisted on PVC
+    dir = "/var/lib/influxdb3/data"
+    # WAL (Write-Ahead Log) directory — persisted on PVC
+    wal-dir = "/var/lib/influxdb3/wal"
+    # WAL flush frequency — balances durability with performance
+    # A 1-second flush means at most 1s of data is lost on hard failure,
+    # keeping RPO well under the required 60s.
+    wal-fsync-delay = "1s"
+    # Maximum WAL size before forced flush (256 MiB)
+    wal-max-size = 268435456
+    # Cache maximum memory size — accommodates high-frequency sensor writes
+    cache-max-memory-size = 1073741824   # 1 GiB
+    # Compaction workers — balance CPU with write throughput
+    compact-throughput = "48m"
+    compact-throughput-burst = "48m"
+    # Trace all slow queries (>1s) for observability
+    query-log-enabled = true
+    trace-logging-enabled = false
+
+    [coordinator]
+    # Write timeout; fail fast and let caller retry (Req 1 C8)
+    write-timeout = "10s"
+    # Read timeout
+    query-timeout = "30s"
+    # Maximum number of concurrent queries
+    max-concurrent-queries = 100
+
+    [retention]
+    # Check interval for retention enforcement (run every 30 minutes)
+    check-interval = "30m"
+
+    [shard-precreation]
+    # Pre-create shard groups 30 minutes ahead to avoid latency spikes
+    check-interval = "10m"
+    advance-period = "30m"
+
+    [monitor]
+    # Internal stats collection interval
+    store-interval = "10s"
+
+    [logging]
+    # Structured JSON log output for ELK ingestion (Req 17)
+    format = "json"
+    level = "info"
+
+    [http.pprof-enabled]
+    # Disable pprof in production for security
+    enabled = false
+
+  # ─── Replication / WAL streaming configuration ──────────────────────────────
+  # This configuration is consumed by the WAL-streaming replication sidecar
+  # and by the standby init script. It defines the replication topology.
+  replication.toml: |
+    # WAL Streaming Replication configuration
+    # The primary node continuously streams its WAL to the standby.
+    # Replication lag target: ≤60s  (Requirement 15/16 C2, RPO ≤60s)
+
+    [replication]
+    # Replication role for this node: "primary" or "standby"
+    # Injected at runtime via INFLUXDB_REPLICATION_ROLE environment variable.
+    # Here we document both sides for clarity.
+
+    # Primary settings
+    # wal-stream-bind = "0.0.0.0:8088"   # TCP port for WAL streaming
+    # standby-address = "influxdb-standby-0.influxdb-standby-headless.railos.svc.cluster.local:8088"
+    # max-replication-lag-seconds = 60   # Emit alert if lag exceeds this threshold
+
+    # Standby settings
+    # primary-address = "influxdb-primary-0.influxdb-primary-headless.railos.svc.cluster.local:8088"
+    # apply-timeout = "5s"
+
+  # ─── Retention policy reference (applied via InfluxDB API at startup) ────────
+  # The startup Job (06-setup-job.yaml) reads this and creates/updates buckets.
+  retention-policies.json: |
+    {
+      "buckets": [
+        {
+          "name": "sensor_events",
+          "description": "Raw sensor events from trackside and rolling stock (Req 1 C4)",
+          "retentionRules": [
+            {
+              "type": "expire",
+              "everySeconds": 7776000,
+              "comment": "90 days — matches Req 1 C4 minimum retention"
+            }
+          ]
+        },
+        {
+          "name": "digital_twin_state",
+          "description": "Real-time train positions and state for Digital Twin (Req 8 C1)",
+          "retentionRules": [
+            {
+              "type": "expire",
+              "everySeconds": 604800,
+              "comment": "7 days — live state store, older data moved to Delta Lake"
+            }
+          ]
+        },
+        {
+          "name": "corridor_energy_efficiency",
+          "description": "Per-node inference ops/wh aggregates written by Flink daily (Req 22 C2)",
+          "retentionRules": [
+            {
+              "type": "expire",
+              "everySeconds": 7776000,
+              "comment": "90 days — matches sensor event retention for correlation"
+            }
+          ]
+        },
+        {
+          "name": "observability_telemetry",
+          "description": "Internal telemetry for the observability stack (Req 19 C7)",
+          "retentionRules": [
+            {
+              "type": "expire",
+              "everySeconds": 2592000,
+              "comment": "30 days — matches Prometheus retention policy"
+            }
+          ]
+        }
+      ]
+    }
+
+  # ─── Prometheus scrape annotations reference ─────────────────────────────────
+  # InfluxDB 3.0 exposes Prometheus metrics natively on /metrics at port 8086.
+  # The pod template annotations below trigger Prometheus auto-discovery.
+  # Relevant metrics:
+  #   influxdb_http_request_duration_seconds  — query latency
+  #   influxdb_write_points_total             — ingestion throughput
+  #   influxdb_wal_size                       — WAL growth (replication lag proxy)
+  #   influxdb_replication_lag_seconds        — WAL streaming lag to standby
+  prometheus-scrape-info: |
+    # Prometheus scrape annotations set on pod templates:
+    #   prometheus.io/scrape: "true"
+    #   prometheus.io/port:   "8086"
+    #   prometheus.io/path:   "/metrics"
+    # Alert rule: influxdb_replication_lag_seconds > 60 → page on-call (Req 15/16)
