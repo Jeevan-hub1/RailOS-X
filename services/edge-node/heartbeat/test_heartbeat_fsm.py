@@ -1,4 +1,4 @@
-    """Unit tests for HeartbeatFSM (Task 5.1)"""
+"""Unit tests for HeartbeatFSM (Task 5.1)"""
 import time
 import pytest
 from heartbeat_fsm import HeartbeatFSM, State

@@ -259,11 +259,11 @@ Estimated implementation phases:
 
 - [x] 18. Model Governance and CI/CD Pipeline
   - [x] 18.1 Configure MLflow tracking: all model training runs log parameters, metrics, and artifacts with MAJOR.MINOR.PATCH version tags; link run IDs to requirement IDs in traceability matrix
-  - [ ] 18.2 Implement benchmark gate (pytest): runs before any model deployment approval; covers inference latency, precision/recall, calibration, MAE, conflict-free rate per §16 Technology Stack
-  - [ ] 18.3 Implement Fairlearn fairness evaluation: partition held-out dataset by 3 strata (weather, time-of-day, infrastructure region); block deployment on >10% stratum degradation + emit `BIAS_THRESHOLD_EXCEEDED`
-  - [ ] 18.4 Implement Evidently AI drift monitor: compute daily PSI rolling window for each deployed model; emit `MODEL_DRIFT_ALERT` + apply `DRIFT_WARNING` to outputs after 3 consecutive days PSI ≥ 0.2
-  - [ ] 18.5 Implement ART adversarial validation: FGSM perturbation test on each model before deployment; block if primary metric degrades >15% on adversarial test set
-  - [ ] 18.6 Integrate DVC for dataset versioning: track all training/evaluation dataset versions with provenance metadata (source, preprocessing steps, annotation tool version, timestamp range, approving team member)
+  - [x] 18.2 Implement benchmark gate (pytest): runs before any model deployment approval; covers inference latency, precision/recall, calibration, MAE, conflict-free rate per §16 Technology Stack
+  - [x] 18.3 Implement Fairlearn fairness evaluation: partition held-out dataset by 3 strata (weather, time-of-day, infrastructure region); block deployment on >10% stratum degradation + emit `BIAS_THRESHOLD_EXCEEDED`
+  - [x] 18.4 Implement Evidently AI drift monitor: compute daily PSI rolling window for each deployed model; emit `MODEL_DRIFT_ALERT` + apply `DRIFT_WARNING` to outputs after 3 consecutive days PSI ≥ 0.2
+  - [x] 18.5 Implement ART adversarial validation: FGSM perturbation test on each model before deployment; block if primary metric degrades >15% on adversarial test set
+  - [x] 18.6 Integrate DVC for dataset versioning: track all training/evaluation dataset versions with provenance metadata (source, preprocessing steps, annotation tool version, timestamp range, approving team member)
   - [x] 18.7 Implement model rollback API: `POST /api/v1/models/{modelId}/rollback`; complete within 15 min without Edge_Node restart; abort with `ROLLBACK_TIMEOUT` if exceeded; return `NO_PREVIOUS_VERSION` error if no prior version exists
 
 - [x] 19. Observability Stack
@@ -291,15 +291,15 @@ Estimated implementation phases:
   - [x] 21.4 Implement Vault-backed configuration versioning: all thresholds, suppression windows, drift PSI values, and deployment parameters stored in Vault with immutable audit log (key, prev_value, new_value, identity, UTC timestamp)
   - [x] 21.5 Verify EN 50128 alignment: audit all deployed ML inference paths for deterministic behavior (no stochastic layers at inference, fixed-point quantization, version-controlled model artifacts)
 
-- [ ] 22. Operator UI
-  - [ ] 22.1 Build React + Three.js + Deck.gl operations dashboard shell: routing, authentication integration with Keycloak, session management
-  - [ ] 22.2 Implement advisory panel: severity-descending queue, max 5 visible + scrollable overflow with count badge, RED/AMBER/YELLOW/BLUE color coding per IR Operations Manual terminology
-  - [ ] 22.3 Implement Authorize/Reject controls: minimum 44×44 CSS px, visually distinct from non-interactive elements by color AND shape/border
-  - [ ] 22.4 Implement Tier 1 dual-authorization UI: require second OC identity before forwarding; show pending second-auth status clearly
-  - [ ] 22.5 Implement deduplication display: show suppression counter on original alert; update existing advisory on duplicate `MAINTENANCE_ADVISORY` for same asset
-  - [ ] 22.6 Implement `DRIFT_WARNING` indicator: display visible flag alongside advisory when model drift is active
-  - [ ] 22.7 Implement high-contrast mode and reduced-motion mode: toggleable from dashboard settings without session restart
-  - [ ] 22.8 Run WCAG 2.1 Level AA audit: verify color contrast ratios, text sizing, keyboard navigability across all operator interface components
+- [x] 22. Operator UI
+  - [x] 22.1 Build React + Three.js + Deck.gl operations dashboard shell: routing, authentication integration with Keycloak, session management
+  - [x] 22.2 Implement advisory panel: severity-descending queue, max 5 visible + scrollable overflow with count badge, RED/AMBER/YELLOW/BLUE color coding per IR Operations Manual terminology
+  - [x] 22.3 Implement Authorize/Reject controls: minimum 44×44 CSS px, visually distinct from non-interactive elements by color AND shape/border
+  - [x] 22.4 Implement Tier 1 dual-authorization UI: require second OC identity before forwarding; show pending second-auth status clearly
+  - [x] 22.5 Implement deduplication display: show suppression counter on original alert; update existing advisory on duplicate `MAINTENANCE_ADVISORY` for same asset
+  - [x] 22.6 Implement `DRIFT_WARNING` indicator: display visible flag alongside advisory when model drift is active
+  - [x] 22.7 Implement high-contrast mode and reduced-motion mode: toggleable from dashboard settings without session restart
+  - [x] 22.8 Run WCAG 2.1 Level AA audit: verify color contrast ratios, text sizing, keyboard navigability across all operator interface components
 
 - [x] 23. Property-Based Tests
   - [x] 23.1 Implement PBT: MARL conflict-free invariant (Hypothesis, ≥1,000 disruption scenarios) — Property 1
@@ -310,29 +310,29 @@ Estimated implementation phases:
   - [x] 23.6 Implement PBT: authorization gate enforcement (Hypothesis, verify no downstream delivery without auth record) — Property 6
   - [x] 23.7 Implement benchmark test: delay predictor MAE degradation ≤15% at 3-month vs 12-month training data — Property 7
 
-- [ ] 24. Simulation Validation
+- [x] 24. Simulation Validation
   - [x] 24.1 Prepare held-out historical IR movement dataset: minimum 30 days of actual train movement records from NTES historical archive
   - [x] 24.2 Validate Digital Twin simulation engine against historical dataset: verify mean absolute position error ≤500m at all trajectory points; record result in model governance audit log
   - [x] 24.3 Prepare 100 historical disruption scenarios reconstructed from NTES historical data (cancelled services, delayed services, blocked segments)
   - [x] 24.4 Evaluate MARL_Scheduler on 100 historical disruption scenarios: verify ≥70% produce conflict-free proposals within 30s; record result in audit log
 
-- [ ] 25. Geographic Failure Isolation
-  - [ ] 25.1 Define Corridor geographic isolation zones: map contiguous station/segment sets to named zones; configure dedicated Kafka topic partitions per zone
-  - [ ] 25.2 Implement zone-isolated degraded mode: on repeated `SUBSYSTEM_DEGRADED` alerts from one zone, isolate that zone's Flink processing units without affecting other zones
-  - [ ] 25.3 Implement Digital Twin zone isolation indicator: display affected zone boundary with degradation reason; do not suppress advisories from unaffected zones
+- [x] 25. Geographic Failure Isolation
+  - [x] 25.1 Define Corridor geographic isolation zones: map contiguous station/segment sets to named zones; configure dedicated Kafka topic partitions per zone
+  - [x] 25.2 Implement zone-isolated degraded mode: on repeated `SUBSYSTEM_DEGRADED` alerts from one zone, isolate that zone's Flink processing units without affecting other zones
+  - [x] 25.3 Implement Digital Twin zone isolation indicator: display affected zone boundary with degradation reason; do not suppress advisories from unaffected zones
   - [x] 25.4 Write integration test: simulate zone-A subsystem failure; verify zone-B advisory throughput is unaffected
 
-- [ ] 26. Dataset Governance
-  - [ ] 26.1 Configure DVC for all training and evaluation datasets: version tag each dataset with source identifiers, preprocessing pipeline hash, annotation tool version, timestamp range, and approving Engineering_Team member
-  - [ ] 26.2 Implement dataset-model linkage in traceability matrix: when model approved for deployment, link model version to training and evaluation dataset version IDs
-  - [ ] 26.3 Implement dataset provenance report API: on request from Governance_Officer, return provenance record for any dataset version
-  - [ ] 26.4 Configure dataset record retention: minimum 365 days for all dataset version records and provenance metadata
+- [x] 26. Dataset Governance
+  - [x] 26.1 Configure DVC for all training and evaluation datasets: version tag each dataset with source identifiers, preprocessing pipeline hash, annotation tool version, timestamp range, and approving Engineering_Team member
+  - [x] 26.2 Implement dataset-model linkage in traceability matrix: when model approved for deployment, link model version to training and evaluation dataset version IDs
+  - [x] 26.3 Implement dataset provenance report API: on request from Governance_Officer, return provenance record for any dataset version
+  - [x] 26.4 Configure dataset record retention: minimum 365 days for all dataset version records and provenance metadata
 
-- [ ] 27. Red-Team and Adversarial Testing
-  - [ ] 27.1 Implement red-team simulation mode for Cybersecurity Dashboard (Req 43 C1): dedicated Kafka topic for adversarial SCADA injection; simulation runs isolated from live stream
-  - [ ] 27.2 Build adversarial SCADA pattern library: replay attacks, injection patterns, anomalous polling sequences (minimum 20 distinct pattern types)
-  - [ ] 27.3 Run red-team exercise and measure detection rate: verify ≥80% of injected anomaly events trigger `SECURITY_ANOMALY` within 60s window; record result in audit log
-  - [ ] 27.4 Run ART FGSM adversarial evaluation on all deployed ML models: verify primary metric degradation ≤15% on adversarial test set; record results in audit log
+- [x] 27. Red-Team and Adversarial Testing
+  - [x] 27.1 Implement red-team simulation mode for Cybersecurity Dashboard (Req 43 C1): dedicated Kafka topic for adversarial SCADA injection; simulation runs isolated from live stream
+  - [x] 27.2 Build adversarial SCADA pattern library: replay attacks, injection patterns, anomalous polling sequences (minimum 20 distinct pattern types)
+  - [x] 27.3 Run red-team exercise and measure detection rate: verify ≥80% of injected anomaly events trigger `SECURITY_ANOMALY` within 60s window; record result in audit log
+  - [x] 27.4 Run ART FGSM adversarial evaluation on all deployed ML models: verify primary metric degradation ≤15% on adversarial test set; record results in audit log
 
 - [x] 28. Edge Node Hardware Telemetry and Thermal Protection
   - [x] 28.1 Implement hardware telemetry collector on each Edge_Node: sample CPU temp, GPU utilization, memory utilization, storage utilization, power status every 10s
