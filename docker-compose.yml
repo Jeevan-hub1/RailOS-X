@@ -1,0 +1,176 @@
+###############################################################################
+# RailOS-X — Full Local Development Stack
+#
+# Spins up all infrastructure dependencies + Python microservices for local dev.
+#
+# Usage:
+#   docker compose up -d              # Start infrastructure only (default profile)
+#   docker compose --profile all up   # Start infrastructure + all services
+#
+# Individual services can be run natively (outside Docker) against the infra:
+#   python -m services.kavach_advisory.kavach_advisory
+#   python -m services.authorization_gate.gate_service
+#   python -m services.marl_scheduler.service.scheduler_service
+#
+# Infrastructure endpoints (after `docker compose up -d`):
+#   Kafka bootstrap:    localhost:9092
+#   PostgreSQL:         localhost:5432  (user: railos, pass: railos-dev)
+#   InfluxDB:           localhost:8086  (token: railos-dev-token)
+#   Redis:              localhost:6379
+#   MinIO (S3):         localhost:9000  (user: minioadmin, pass: minioadmin)
+#   MinIO Console:      localhost:9001
+###############################################################################
+
+version: "3.9"
+
+services:
+  # ══════════════════════════════════════════════════════════════════════════════
+  # INFRASTRUCTURE
+  # ══════════════════════════════════════════════════════════════════════════════
+
+  # ── Kafka (KRaft mode, single broker for dev) ──────────────────────────────
+  kafka:
+    image: docker.io/bitnami/kafka:3.7.0
+    container_name: railos-kafka
+    environment:
+      KAFKA_CFG_NODE_ID: "1"
+      KAFKA_CFG_PROCESS_ROLES: "broker,controller"
+      KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: "1@kafka:9093"
+      KAFKA_CFG_LISTENERS: "PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:9094"
+      KAFKA_CFG_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:9092,EXTERNAL://localhost:9094"
+      KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT"
+      KAFKA_CFG_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+      KAFKA_CFG_INTER_BROKER_LISTENER_NAME: "PLAINTEXT"
+      KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_CFG_NUM_PARTITIONS: "3"
+      KAFKA_CFG_DEFAULT_REPLICATION_FACTOR: "1"
+      ALLOW_PLAINTEXT_LISTENER: "yes"
+    ports:
+      - "9092:9092"
+      - "9094:9094"
+    healthcheck:
+      test: ["CMD", "kafka-topics.sh", "--list", "--bootstrap-server", "localhost:9092"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 30s
+    volumes:
+      - kafka_data:/bitnami/kafka
+
+  # ── PostgreSQL (for authorization audit, hazard register, Keycloak) ─────────
+  postgres:
+    image: docker.io/library/postgres:16-alpine
+    container_name: railos-postgres
+    environment:
+      POSTGRES_USER: railos
+      POSTGRES_PASSWORD: railos-dev
+      POSTGRES_DB: railos
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U railos"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/local-dev/init-db.sql:/docker-entrypoint-initdb.d/01-init.sql
+
+  # ── InfluxDB 2.x (time-series for telemetry + digital twin state) ──────────
+  influxdb:
+    image: docker.io/library/influxdb:2.7
+    container_name: railos-influxdb
+    environment:
+      DOCKER_INFLUXDB_INIT_MODE: setup
+      DOCKER_INFLUXDB_INIT_USERNAME: railos
+      DOCKER_INFLUXDB_INIT_PASSWORD: railos-dev-password
+      DOCKER_INFLUXDB_INIT_ORG: railos
+      DOCKER_INFLUXDB_INIT_BUCKET: sensor-telemetry
+      DOCKER_INFLUXDB_INIT_ADMIN_TOKEN: railos-dev-token
+    ports:
+      - "8086:8086"
+    healthcheck:
+      test: ["CMD", "influx", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - influxdb_data:/var/lib/influxdb2
+
+  # ── Redis (for caching, session store, pub/sub) ────────────────────────────
+  redis:
+    image: docker.io/library/redis:7-alpine
+    container_name: railos-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ── MinIO (S3-compatible for MLflow artifacts, WORM forensic storage) ──────
+  minio:
+    image: docker.io/minio/minio:latest
+    container_name: railos-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - minio_data:/data
+
+  # ── Kafka Topic Initializer ────────────────────────────────────────────────
+  kafka-init:
+    image: docker.io/bitnami/kafka:3.7.0
+    container_name: railos-kafka-init
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        echo "Creating RailOS Kafka topics..."
+        topics=(
+          "train.telemetry.position"
+          "train.telemetry.vibration"
+          "train.telemetry.temperature"
+          "train.telemetry.wheel_load"
+          "train.telemetry.acoustic"
+          "train.telemetry.gps"
+          "vision.defect.alerts"
+          "maintenance.advisories"
+          "scheduling.proposals"
+          "scheduling.disruptions"
+          "monitoring.alerts"
+          "monitoring.drift"
+          "ops.advisories.authorized"
+          "security.anomalies"
+          "security.scada.raw"
+          "fl.model.updates"
+          "audit.authorization"
+        )
+        for topic in "$${topics[@]}"; do
+          kafka-topics.sh --create --if-not-exists \
+            --bootstrap-server kafka:9092 \
+            --topic "$$topic" \
+            --partitions 3 \
+            --replication-factor 1
+          echo "  Created: $$topic"
+        done
+        echo "All topics created successfully."
+    restart: "no"
+
+volumes:
+  kafka_data:
+  postgres_data:
+  influxdb_data:
+  minio_data:

@@ -73,8 +73,12 @@ class ConformalMaintenanceWrapper:
         # Enforce CI width rule for non-zero interpolation
         if interpolation_pct > 0.0 and self._baseline_ci_width is not None:
             min_width = self._baseline_ci_width * (1.0 + interpolation_pct / 20.0)
-            if ci_width < min_width:
-                extra = (min_width - ci_width) / 2.0
+            current_width = ci_upper - ci_lower
+            # Add margin to compensate for rounding of ci_lower/ci_upper to 4 decimals
+            # (rounding can shrink width by up to 0.0001)
+            target_width = min_width + 0.0002
+            if current_width < target_width:
+                extra = (target_width - current_width) / 2.0
                 ci_lower = max(0.0, ci_lower - extra)
                 ci_upper = min(1.0, ci_upper + extra)
 

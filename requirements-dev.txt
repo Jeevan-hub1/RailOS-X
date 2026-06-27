@@ -1,0 +1,44 @@
+# RailOS-X — Combined Development Dependencies
+# Install: pip install -r requirements-dev.txt
+#
+# Note: Heavy ML packages (ultralytics, torch-geometric, apache-flink, opacus)
+# are optional — the core services and tests run without them.
+
+# ── Core Web Framework ────────────────────────────────────────────────────────
+fastapi==0.111.0
+uvicorn==0.30.0
+pydantic>=2.7.0
+
+# ── ML / Data Science (CPU-only for local dev) ───────────────────────────────
+torch==2.3.0
+numpy==1.26.4
+
+# ── Messaging & Data ─────────────────────────────────────────────────────────
+kafka-python==2.0.2
+influxdb-client==1.43.0
+psycopg2-binary==2.9.9
+redis==5.0.4
+
+# ── Monitoring ───────────────────────────────────────────────────────────────
+prometheus-client==0.20.0
+
+# ── HTTP Client ──────────────────────────────────────────────────────────────
+httpx==0.27.0
+
+# ── ML Ops ───────────────────────────────────────────────────────────────────
+mlflow==2.13.0
+
+# ── Explainability & Confidence ──────────────────────────────────────────────
+shap==0.45.0
+mapie==0.8.6
+
+# ── Schema Validation ────────────────────────────────────────────────────────
+jsonschema==4.22.0
+
+# ── Testing ──────────────────────────────────────────────────────────────────
+pytest==8.2.2
+pytest-asyncio==0.23.7
+hypothesis==6.103.1
+
+# ── Auth ─────────────────────────────────────────────────────────────────────
+python-jose[cryptography]==3.3.0
