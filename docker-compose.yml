@@ -14,7 +14,7 @@
 #
 # Infrastructure endpoints (after `docker compose up -d`):
 #   Kafka bootstrap:    localhost:9092
-#   PostgreSQL:         localhost:5432  (user: railos, pass: railos-dev)
+#   PostgreSQL:         localhost:5433  (user: railos, pass: railos-dev)
 #   InfluxDB:           localhost:8086  (token: railos-dev-token)
 #   Redis:              localhost:6380  (NOTE: 6380 to avoid conflict with local Redis)
 #   MinIO (S3):         localhost:9000  (user: minioadmin, pass: minioadmin)
@@ -64,7 +64,7 @@ services:
       POSTGRES_PASSWORD: railos-dev
       POSTGRES_DB: railos
     ports:
-      - "5432:5432"
+      - "5433:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U railos"]
       interval: 5s
