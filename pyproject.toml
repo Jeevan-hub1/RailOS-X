@@ -1,0 +1,17 @@
+[project]
+name = "railos-x"
+version = "1.0.0"
+description = "RailOS — Cognitive Operating System for Indian Railways"
+requires-python = ">=3.10"
+
+[tool.pytest.ini_options]
+testpaths = ["tests", "services"]
+pythonpath = ["."]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks tests requiring infrastructure (Kafka, PostgreSQL, etc.)",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
