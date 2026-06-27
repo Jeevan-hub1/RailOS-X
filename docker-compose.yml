@@ -16,12 +16,10 @@
 #   Kafka bootstrap:    localhost:9092
 #   PostgreSQL:         localhost:5432  (user: railos, pass: railos-dev)
 #   InfluxDB:           localhost:8086  (token: railos-dev-token)
-#   Redis:              localhost:6379
+#   Redis:              localhost:6380  (NOTE: 6380 to avoid conflict with local Redis)
 #   MinIO (S3):         localhost:9000  (user: minioadmin, pass: minioadmin)
 #   MinIO Console:      localhost:9001
 ###############################################################################
-
-version: "3.9"
 
 services:
   # ══════════════════════════════════════════════════════════════════════════════
@@ -102,7 +100,7 @@ services:
     image: docker.io/library/redis:7-alpine
     container_name: railos-redis
     ports:
-      - "6379:6379"
+      - "6380:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
