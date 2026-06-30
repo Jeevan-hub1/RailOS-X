@@ -31,6 +31,31 @@ def start_marl():
     uvicorn.run(app, host="0.0.0.0", port=8081, log_level="info")
 
 
+def start_micro_edge():
+    import uvicorn
+    from services.edge_compute.micro_edge.sensor_hub import create_app
+    app = create_app()
+    uvicorn.run(app, host="0.0.0.0", port=8090, log_level="info")
+
+
+def start_station_edge():
+    import uvicorn
+    from services.edge_compute.station_edge.station_aggregator import app
+    uvicorn.run(app, host="0.0.0.0", port=8091, log_level="info")
+
+
+def start_zone_compute():
+    import uvicorn
+    from services.edge_compute.zone_compute.zone_orchestrator import app
+    uvicorn.run(app, host="0.0.0.0", port=8092, log_level="info")
+
+
+def start_digital_twin():
+    import uvicorn
+    from services.digital_twin.backend.websocket_server import app
+    uvicorn.run(app, host="0.0.0.0", port=3001, log_level="info")
+
+
 if __name__ == "__main__":
     print("=" * 70)
     print("RailOS-X — Starting Core Services")
@@ -39,6 +64,10 @@ if __name__ == "__main__":
     print("  Kavach++ Advisory:    http://localhost:8082")
     print("  Authorization Gate:   http://localhost:8087")
     print("  MARL Scheduler:       http://localhost:8081")
+    print("  Digital Twin:         http://localhost:3001 (WS: ws://localhost:3001/ws)")
+    print("  Micro-Edge Sensor:    http://localhost:8090")
+    print("  Station Edge:         http://localhost:8091")
+    print("  Zone Compute:         http://localhost:8092")
     print()
     print("=" * 70)
 
@@ -46,6 +75,10 @@ if __name__ == "__main__":
         multiprocessing.Process(target=start_kavach, name="kavach-advisory"),
         multiprocessing.Process(target=start_authgate, name="auth-gate"),
         multiprocessing.Process(target=start_marl, name="marl-scheduler"),
+        multiprocessing.Process(target=start_digital_twin, name="digital-twin"),
+        multiprocessing.Process(target=start_micro_edge, name="micro-edge"),
+        multiprocessing.Process(target=start_station_edge, name="station-edge"),
+        multiprocessing.Process(target=start_zone_compute, name="zone-compute"),
     ]
 
     for p in procs:

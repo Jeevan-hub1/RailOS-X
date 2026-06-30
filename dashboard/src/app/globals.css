@@ -1,0 +1,71 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 222 47% 6%;
+    --foreground: 210 40% 98%;
+    --card: 222 47% 8%;
+    --card-foreground: 210 40% 98%;
+    --border: 217 33% 17%;
+    --muted: 217 33% 17%;
+    --muted-foreground: 215 20% 65%;
+    --accent: 199 89% 48%;
+  }
+  
+  body {
+    @apply bg-[hsl(var(--background))] text-[hsl(var(--foreground))];
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  }
+}
+
+@layer components {
+  .glass-panel {
+    @apply bg-slate-900/60 backdrop-blur-xl border border-slate-700/50 rounded-xl;
+  }
+  
+  .status-indicator {
+    @apply w-2.5 h-2.5 rounded-full;
+  }
+  
+  .status-ok { @apply bg-emerald-400 shadow-lg shadow-emerald-400/50; }
+  .status-warn { @apply bg-amber-400 shadow-lg shadow-amber-400/50; }
+  .status-error { @apply bg-red-400 shadow-lg shadow-red-400/50 animate-pulse; }
+  
+  /* Risk Tiers */
+  .tier-1 { 
+    @apply border-red-500 bg-red-500/10 text-red-300;
+    box-shadow: 0 0 12px rgba(239, 68, 68, 0.15);
+  }
+  .tier-2 { 
+    @apply border-amber-500 bg-amber-500/10 text-amber-300;
+    box-shadow: 0 0 8px rgba(245, 158, 11, 0.1);
+  }
+  .tier-3 { 
+    @apply border-emerald-500 bg-emerald-500/10 text-emerald-300;
+  }
+
+  /* Tier badge pills */
+  .tier-badge-1 {
+    @apply px-2 py-0.5 rounded-full text-[10px] font-bold bg-red-500/20 text-red-400 border border-red-500/30;
+  }
+  .tier-badge-2 {
+    @apply px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/20 text-amber-400 border border-amber-500/30;
+  }
+  .tier-badge-3 {
+    @apply px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30;
+  }
+
+  /* Architecture tier cards */
+  .arch-tier-1 { @apply border-slate-500/30 bg-slate-500/5; }
+  .arch-tier-2 { @apply border-purple-500/30 bg-purple-500/5; }
+  .arch-tier-3 { @apply border-indigo-500/30 bg-indigo-500/5; }
+  .arch-tier-4 { @apply border-sky-500/30 bg-sky-500/5; }
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: hsl(222 47% 8%); }
+::-webkit-scrollbar-thumb { background: hsl(217 33% 25%); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: hsl(217 33% 35%); }

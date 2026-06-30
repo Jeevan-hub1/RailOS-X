@@ -38,8 +38,8 @@ warn() { echo -e "${YELLOW}[RailOS]${NC} $*"; }
 err()  { echo -e "${RED}[RailOS]${NC} $*" >&2; }
 
 # ── Environment Variables for Local Dev ──────────────────────────────────────
-export KAFKA_BOOTSTRAP_SERVERS="localhost:9094"
-export DB_URL="postgresql://railos:railos-dev@localhost:5432/railos"
+export KAFKA_BOOTSTRAP_SERVERS="localhost:9092"
+export DB_URL="postgresql://railos:railos-dev@localhost:5433/railos"
 export INFLUXDB_URL="http://localhost:8086"
 export INFLUXDB_TOKEN="railos-dev-token"
 export INFLUXDB_ORG="railos"

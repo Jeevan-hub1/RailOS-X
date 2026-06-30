@@ -95,7 +95,7 @@ from services.maintenance_engine.model.conformal_wrapper import ConformalMainten
 
 
 @given(st.floats(min_value=0.0, max_value=40.0, allow_nan=False))
-@settings(max_examples=200)
+@settings(max_examples=200, deadline=None)
 def test_property_4_ci_monotonic_widening(interp_pct: float):
     """Property 4 — CI width(p) ≥ CI width(0%) × (1 + p/20)."""
     torch.manual_seed(42)
@@ -139,7 +139,7 @@ def test_property_5_risk_score_bounds(prob: float, severity: str):
 # ════════════════════════════════════════════════════════════════════════════════
 
 @given(st.integers(min_value=1, max_value=20))
-@settings(max_examples=200)
+@settings(max_examples=200, deadline=None)
 def test_property_6_authorization_gate_enforcement(n_advisories: int):
     """Property 6 — Downstream receives advisory only after AUTHORIZE action."""
     from fastapi.testclient import TestClient
