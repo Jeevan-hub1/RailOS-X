@@ -22,6 +22,17 @@ def _time_str(h: int, m: int) -> str:
     return f"{h:02d}:{m:02d}:00"
 
 
+def _abs_time_str(total_min: int) -> str:
+    """Format absolute minutes-after-14:00 as HH:MM:SS, carrying into hours.
+
+    Using a plain ``% 60`` here would wrap minutes back into the same hour and
+    make nominally-sequential windows overlap (or even invert), so we carry the
+    overflow into the hour component instead.
+    """
+    h, m = divmod(total_min, 60)
+    return f"{14 + h:02d}:{m:02d}:00"
+
+
 @st.composite
 def disruption_strategy(draw):
     n_trains = draw(st.integers(min_value=1, max_value=10))
@@ -45,8 +56,8 @@ def proposal_strategy(draw):
             "trainId": f"T{i}",
             "actions": [{
                 "segmentId": f"SEG-{draw(st.integers(0, 20))}",
-                "enterAt": _time_str(14, enter_min % 60),
-                "exitAt":  _time_str(14, exit_min  % 60),
+                "enterAt": _abs_time_str(enter_min),
+                "exitAt":  _abs_time_str(exit_min),
             }],
             "delayDeltaMin": draw(st.integers(-10, 30)),
         })

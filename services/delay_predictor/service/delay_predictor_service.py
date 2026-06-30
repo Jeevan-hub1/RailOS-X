@@ -20,10 +20,18 @@ from fastapi.responses import JSONResponse
 from prometheus_client import Counter, Histogram, start_http_server
 from pydantic import BaseModel, Field
 
-from ..data.graph_builder import build_corridor_graph
-from ..model.conformal_predictor import ConformalDelayPredictor
-from ..model.hetgnn_model import HetGNN
-from .ntes_consumer import NTESConsumer
+try:
+    # When imported as part of the `services.delay_predictor` package
+    from ..data.graph_builder import build_corridor_graph
+    from ..model.conformal_predictor import ConformalDelayPredictor
+    from ..model.hetgnn_model import HetGNN
+    from .ntes_consumer import NTESConsumer
+except (ImportError, ValueError):
+    # When the service directory itself is on sys.path (tests / standalone run)
+    from data.graph_builder import build_corridor_graph
+    from model.conformal_predictor import ConformalDelayPredictor
+    from model.hetgnn_model import HetGNN
+    from service.ntes_consumer import NTESConsumer
 
 log = logging.getLogger(__name__)
 logging.basicConfig(

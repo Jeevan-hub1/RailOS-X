@@ -31,14 +31,19 @@ from prometheus_client import Counter, Histogram, Gauge, start_http_server
 from pydantic import BaseModel
 
 try:
+    # When imported as part of the `services.marl_scheduler` package
     from ..constraints.conflict_checker import ConflictChecker, ConflictViolation
 except (ImportError, ValueError):
-    # Fallback if running outside package context
-    class ConflictViolation(RuntimeError):
-        pass
-    class ConflictChecker:
-        def assert_conflict_free(self, proposal):
+    try:
+        # When the service directory itself is on sys.path (tests / standalone)
+        from constraints.conflict_checker import ConflictChecker, ConflictViolation
+    except (ImportError, ValueError):
+        # Last-resort fallback if the constraint layer is genuinely unavailable
+        class ConflictViolation(RuntimeError):
             pass
+        class ConflictChecker:
+            def assert_conflict_free(self, proposal):
+                pass
 
 log = logging.getLogger(__name__)
 logging.basicConfig(
@@ -218,21 +223,34 @@ def _generate_proposal(event: dict) -> Optional[dict]:
                 for s in route_segments[:seg_idx]
             ) if seg_length_km > 0 else base_minute + idx * 4
 
-            # Resolve conflicts: check if slot overlaps existing allocations
-            enter_min_abs = base_hour * 60 + enter_offset_min % 60
+            # Absolute minutes measured from the scheduling base hour. Do NOT
+            # apply `% 60` here: that collapses every train into a single hour
+            # window and manufactures overlaps. Times roll into later hours
+            # naturally when formatted below via divmod().
+            enter_min_abs = base_hour * 60 + enter_offset_min
             exit_min_abs = enter_min_abs + transit_min
 
+            # Resolve conflicts iteratively. A single max-shift pass is not
+            # enough: after shifting past one occupant the window can overlap a
+            # later one, so we re-check until the window is clear of every
+            # occupied slot on this segment, leaving at least the minimum
+            # headway after the preceding occupant.
+            headway_min = MIN_HEADWAY_S // 60
             seg_occupied = occupied_slots.get(segment.segment_id, [])
             conflict_shift = 0
-            for occ_enter, occ_exit in seg_occupied:
-                # Check overlap
-                if enter_min_abs < occ_exit and exit_min_abs > occ_enter:
-                    # Headway violation — shift this train
-                    conflict_shift = max(conflict_shift, occ_exit - enter_min_abs + MIN_HEADWAY_S // 60)
-                    metrics.conflicts_resolved += 1
+            while True:
+                blocking_exit: Optional[int] = None
+                for occ_enter, occ_exit in seg_occupied:
+                    if enter_min_abs < occ_exit and exit_min_abs > occ_enter:
+                        blocking_exit = occ_exit if blocking_exit is None else max(blocking_exit, occ_exit)
+                if blocking_exit is None:
+                    break
+                shift = (blocking_exit + headway_min) - enter_min_abs
+                enter_min_abs += shift
+                exit_min_abs += shift
+                conflict_shift += shift
+                metrics.conflicts_resolved += 1
 
-            enter_min_abs += conflict_shift
-            exit_min_abs += conflict_shift
             cumulative_delay += conflict_shift
 
             # Record occupancy
