@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { LogOut } from 'lucide-react'
-import { getSession, signOut, type DemoSession } from '@/lib/auth'
+import { getSession, signOut, roleLabel, type DemoSession } from '@/lib/auth'
 
 type View = 'corridor' | 'kavach' | 'marl' | 'gate' | 'zone' | 'health'
 
@@ -46,7 +46,7 @@ export function Header({ activeView }: { activeView: View }) {
 
   const { title, subtitle } = VIEW_TITLES[activeView]
   const displayName = session?.name || 'Ctrl. Sharma'
-  const displayRole = session?.role || 'Operations Controller'
+  const displayRole = roleLabel(session?.role || 'Operations_Controller')
 
   return (
     <header className="h-16 bg-slate-950/80 backdrop-blur-sm border-b border-slate-800 flex items-center justify-between px-6">

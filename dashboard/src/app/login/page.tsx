@@ -14,7 +14,7 @@ export default function LoginPage() {
   const [name, setName] = useState('Ctrl. Sharma')
   const [email, setEmail] = useState(DEMO_EMAIL)
   const [password, setPassword] = useState('')
-  const [role, setRole] = useState<string>(DEMO_ROLES[0])
+  const [role, setRole] = useState<string>(DEMO_ROLES[0].id)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
 
@@ -39,7 +39,7 @@ export default function LoginPage() {
     setName('Ctrl. Sharma')
     setEmail(DEMO_EMAIL)
     setPassword(DEMO_PASSWORD)
-    setRole(DEMO_ROLES[0])
+    setRole(DEMO_ROLES[0].id)
     setError('')
   }
 
@@ -125,8 +125,8 @@ export default function LoginPage() {
                 className="w-full px-3 py-2.5 rounded-lg bg-slate-900/70 border border-slate-700 text-sm text-white focus:outline-none focus:border-sky-500/60 focus:ring-1 focus:ring-sky-500/40"
               >
                 {DEMO_ROLES.map((r) => (
-                  <option key={r} value={r} className="bg-slate-900">
-                    {r}
+                  <option key={r.id} value={r.id} className="bg-slate-900">
+                    {r.label}
                   </option>
                 ))}
               </select>
@@ -161,7 +161,9 @@ export default function LoginPage() {
           <div className="mt-5 pt-5 border-t border-slate-800">
             <div className="flex items-center justify-between gap-2">
               <p className="text-[11px] text-slate-500 leading-relaxed">
-                Demo session only — no real authentication. Use any password, or load the demo credentials.
+                Demo session only — no real authentication. In production, sign-in is
+                via Keycloak SSO and access is enforced server-side by the role-based
+                Authorization Gate. Roles below match the backend RBAC model.
               </p>
               <button
                 onClick={fillDemo}
@@ -175,7 +177,7 @@ export default function LoginPage() {
         </div>
 
         <p className="text-center text-[11px] text-slate-600 mt-5">
-          Production access is governed server-side by the role-based Authorization Gate.
+          Production access is governed by Keycloak SSO + the server-side, role-based Authorization Gate.
         </p>
       </div>
     </div>

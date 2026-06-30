@@ -17,11 +17,17 @@ export interface DemoSession {
 }
 
 export const DEMO_ROLES = [
-  'Operations Controller',
-  'Security Officer',
-  'Maintenance Supervisor',
-  'Observer (read-only)',
+  { id: 'Operations_Controller', label: 'Operations Controller' },
+  { id: 'Security_Officer', label: 'Security Officer' },
+  { id: 'Engineering_Team', label: 'Engineering Team' },
+  { id: 'Governance_Officer', label: 'Governance Officer' },
 ] as const
+
+/** Human-friendly label for a canonical role id (e.g. Operations_Controller). */
+export function roleLabel(role: string): string {
+  const match = DEMO_ROLES.find((r) => r.id === role)
+  return match ? match.label : role.replace(/_/g, ' ')
+}
 
 export function signIn(session: Omit<DemoSession, 'signedInAt'>): void {
   if (typeof window === 'undefined') return
