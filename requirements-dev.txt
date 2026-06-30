@@ -12,6 +12,7 @@ pydantic>=2.7.0
 # ── ML / Data Science (CPU-only for local dev) ───────────────────────────────
 torch==2.3.0
 numpy==1.26.4
+pillow==10.3.0
 
 # ── Messaging & Data ─────────────────────────────────────────────────────────
 kafka-python==2.0.2
@@ -40,6 +41,10 @@ jsonschema==4.22.0
 pytest==8.2.2
 pytest-asyncio==0.23.7
 hypothesis==6.103.1
+
+# ── Lint / Security tooling ──────────────────────────────────────────────────
+ruff==0.6.9
+pip-audit==2.7.3
 
 # ── Auth ─────────────────────────────────────────────────────────────────────
 python-jose[cryptography]==3.3.0

@@ -24,7 +24,10 @@ import time
 import threading
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional
+
+if TYPE_CHECKING:
+    from fastapi import FastAPI
 
 from prometheus_client import Counter, Gauge, Histogram, start_http_server
 
@@ -35,8 +38,24 @@ try:
         ProcessingPriority, SyncStrategy, timestamp_ns, latency_ms,
         generate_node_id,
     )
+    _edge_protocol_imported = True
 except (ImportError, ValueError):
-    # Fallback for running outside package context
+    try:
+        # Absolute import for when the service dir is on sys.path (not loaded
+        # as part of the services.edge_compute package). Prefer the REAL shared
+        # protocol over the local stub so definitions never silently diverge.
+        from services.edge_compute.shared.edge_protocol import (
+            SensorType, SensorReading, SensorFeatures, AnomalyFlag,
+            AlertSeverity, RingBuffer, EdgeTier, EdgeNodeStatus, NodeHealth,
+            ProcessingPriority, SyncStrategy, timestamp_ns, latency_ms,
+            generate_node_id,
+        )
+        _edge_protocol_imported = True
+    except (ImportError, ValueError):
+        _edge_protocol_imported = False
+
+if not _edge_protocol_imported:
+    # Last-resort fallback when the shared edge protocol is genuinely unavailable
     from enum import IntEnum
     class SensorType(IntEnum):
         ACCELEROMETER = 1; ACOUSTIC = 2; TEMPERATURE = 3; WHEEL_LOAD = 4; GPS = 5; LIDAR = 6; CAMERA = 7; CURRENT_LOOP = 8; HUMIDITY = 9; WIND_SPEED = 10

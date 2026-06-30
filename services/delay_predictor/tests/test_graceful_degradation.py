@@ -3,17 +3,16 @@ GNN Delay Predictor — graceful degradation + STALE_INPUT tests (Task 8.7)
 Satisfies: Req 5 C3 C4 C5, Design §6.3
 """
 from __future__ import annotations
-import sys, os, time
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+import time
 
 import numpy as np
 import pytest
 from unittest.mock import patch
 
-from model.hetgnn_model import HetGNN
-from model.conformal_predictor import ConformalDelayPredictor
-from data.synthetic_graph import make_synthetic_graph
-from service.ntes_consumer import NTESConsumer
+from services.delay_predictor.model.hetgnn_model import HetGNN
+from services.delay_predictor.model.conformal_predictor import ConformalDelayPredictor
+from services.delay_predictor.data.synthetic_graph import make_synthetic_graph
+from services.delay_predictor.service.ntes_consumer import NTESConsumer
 
 
 def _train_and_eval(n_samples: int) -> float:
@@ -72,7 +71,7 @@ def test_not_stale_within_threshold():
 def test_http_400_on_malformed_request():
     """HTTP 400 with field-level error on malformed POST body (Req 5 C5)."""
     from fastapi.testclient import TestClient
-    from service.delay_predictor_service import app
+    from services.delay_predictor.service.delay_predictor_service import app
     client = TestClient(app, raise_server_exceptions=False)
     # Missing trainId field — Pydantic should reject
     resp = client.post("/api/v1/delay-predictor/forecast",

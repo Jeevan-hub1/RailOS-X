@@ -14,20 +14,12 @@ wrapped_model : ConformalMaintenanceWrapper
 """
 from __future__ import annotations
 
-import sys
-import os
-
 import numpy as np
 import pytest
 import torch
 
-# Ensure the service root is importable when running pytest from the repo root
-_ENGINE_ROOT = os.path.join(os.path.dirname(__file__), "..")
-if _ENGINE_ROOT not in sys.path:
-    sys.path.insert(0, os.path.abspath(_ENGINE_ROOT))
-
-from model.lstm_model import MaintenanceLSTM
-from model.conformal_wrapper import ConformalMaintenanceWrapper
+from services.maintenance_engine.model.lstm_model import MaintenanceLSTM
+from services.maintenance_engine.model.conformal_wrapper import ConformalMaintenanceWrapper
 
 
 # ---------------------------------------------------------------------------

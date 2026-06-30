@@ -21,14 +21,8 @@ import pytest
 import torch
 
 # ---------------------------------------------------------------------------
-# Path setup (if running pytest from repo root or from this directory)
-# ---------------------------------------------------------------------------
-_ENGINE_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if _ENGINE_ROOT not in sys.path:
-    sys.path.insert(0, _ENGINE_ROOT)
-
-from model.lstm_model import MaintenanceLSTM
-from model.conformal_wrapper import ConformalMaintenanceWrapper, INSUFFICIENT_DATA_THRESHOLD
+from services.maintenance_engine.model.lstm_model import MaintenanceLSTM
+from services.maintenance_engine.model.conformal_wrapper import ConformalMaintenanceWrapper, INSUFFICIENT_DATA_THRESHOLD
 
 
 # ===========================================================================

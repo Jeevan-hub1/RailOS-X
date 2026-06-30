@@ -30,7 +30,7 @@ from typing import Optional
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from prometheus_client import Counter, Histogram, start_http_server
+from prometheus_client import REGISTRY, Counter, Histogram, start_http_server
 from pydantic import BaseModel
 
 log = logging.getLogger(__name__)
@@ -49,10 +49,27 @@ g = 9.81          # gravitational acceleration (m/s^2)
 RHO_AIR = 1.225   # air density at sea level (kg/m^3)
 
 # ── Prometheus Metrics ────────────────────────────────────────────────────────
-advisories_emitted    = Counter("kavach_advisories_emitted_total", "Kavach++ advisories emitted")
-unavailable_counter   = Counter("kavach_advisory_unavailable_total", "Advisory unavailable due to missing sensor data")
-braking_latency       = Histogram("kavach_computation_latency_ms", "Braking curve computation time",
-                                  buckets=[0.1, 0.5, 1, 2, 5, 10])
+def _metric(cls, name: str, *args, **kwargs):
+    """Create a metric, or return the existing one if already registered.
+
+    Guards against ``Duplicated timeseries in CollectorRegistry`` when this
+    module is imported more than once under different module names (which can
+    happen under some test/import layouts). Uses the default REGISTRY's internal
+    name map — the established workaround for idempotent metric registration.
+    """
+    try:
+        return cls(name, *args, **kwargs)
+    except ValueError:
+        existing = REGISTRY._names_to_collectors.get(name)
+        if existing is not None:
+            return existing
+        raise
+
+
+advisories_emitted    = _metric(Counter, "kavach_advisories_emitted_total", "Kavach++ advisories emitted")
+unavailable_counter   = _metric(Counter, "kavach_advisory_unavailable_total", "Advisory unavailable due to missing sensor data")
+braking_latency       = _metric(Histogram, "kavach_computation_latency_ms", "Braking curve computation time",
+                                 buckets=[0.1, 0.5, 1, 2, 5, 10])
 
 # ── Cached Kafka producer singleton ──────────────────────────────────────────
 _kafka_producer = None

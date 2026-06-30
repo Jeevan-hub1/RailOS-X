@@ -33,6 +33,10 @@ APP_PORT = int(os.environ.get("APP_PORT", "3001"))
 connected_clients = Gauge("digital_twin_connected_clients", "WebSocket clients")
 state_updates_sent = Counter("digital_twin_updates_sent_total", "State updates pushed")
 
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Corridor Model (NDLS-MERT, 72km)
 # ══════════════════════════════════════════════════════════════════════════════
@@ -320,10 +324,6 @@ async def websocket_endpoint(ws: WebSocket):
         if ws in _clients:
             _clients.remove(ws)
         connected_clients.dec()
-
-
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 if __name__ == "__main__":

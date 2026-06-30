@@ -1,0 +1,94 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel superseded runs on the same ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: lint (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install ruff
+        run: pip install ruff==0.6.9
+      - name: Lint (bug-class rules — blocking)
+        run: ruff check --select=E9,F63,F7,F82 services tests
+      - name: Full lint report (non-blocking)
+        if: always()
+        run: ruff check services tests || true
+      - name: Format check (non-blocking)
+        if: always()
+        run: ruff format --check services tests || true
+
+  audit:
+    name: dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: pip-audit (non-blocking)
+        run: |
+          pip install pip-audit==2.7.3
+          pip-audit -r requirements-dev.txt || true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: npm audit (non-blocking)
+        working-directory: dashboard
+        run: npm audit --omit=dev || true
+
+  python-tests:
+    name: python tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Run test suite (from repo root)
+        # The whole suite now runs from the repo root in one process. For
+        # focused, isolated per-service runs use scripts/run_tests.sh.
+        run: pytest -q
+
+  dashboard-build:
+    name: dashboard build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dashboard
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
