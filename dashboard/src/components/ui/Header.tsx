@@ -2,13 +2,14 @@
 
 import { useEffect, useState } from 'react'
 
-type View = 'corridor' | 'kavach' | 'marl' | 'gate' | 'health'
+type View = 'corridor' | 'kavach' | 'marl' | 'gate' | 'zone' | 'health'
 
 const VIEW_TITLES: Record<View, { title: string; subtitle: string }> = {
   corridor: { title: 'Digital Twin — Corridor Map', subtitle: 'Real-time train positions & advisory overlays' },
   kavach: { title: 'Kavach++ Advisory Layer', subtitle: 'Physics-based braking curves — ADVISORY ONLY' },
   marl: { title: 'MARL Train Scheduler', subtitle: 'Multi-agent conflict-free rescheduling proposals' },
   gate: { title: 'Human Authorization Gate', subtitle: 'Risk-tiered advisory approval workflow' },
+  zone: { title: 'Zone Compute', subtitle: 'Cross-station coordination — Federated Learning, HetGNN, GPU cluster' },
   health: { title: 'System Observability', subtitle: 'Infrastructure health & service status' },
 }
 

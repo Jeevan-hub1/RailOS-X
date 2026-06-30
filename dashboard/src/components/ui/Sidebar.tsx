@@ -2,13 +2,14 @@
 
 import { cn } from '@/lib/utils'
 
-type View = 'corridor' | 'kavach' | 'marl' | 'gate' | 'health'
+type View = 'corridor' | 'kavach' | 'marl' | 'gate' | 'zone' | 'health'
 
 const NAV_ITEMS: { id: View; label: string; icon: string; badge?: string }[] = [
   { id: 'corridor', label: 'Corridor Map', icon: '🗺️' },
   { id: 'kavach', label: 'Kavach++', icon: '🛡️', badge: 'LIVE' },
   { id: 'marl', label: 'MARL Scheduler', icon: '🚂' },
   { id: 'gate', label: 'Auth Gate', icon: '🔐' },
+  { id: 'zone', label: 'Zone Compute', icon: '🖥️' },
   { id: 'health', label: 'System Health', icon: '💚' },
 ]
 

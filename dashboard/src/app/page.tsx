@@ -8,8 +8,9 @@ import { KavachPanel } from '@/components/kavach/KavachPanel'
 import { MARLPanel } from '@/components/marl/MARLPanel'
 import { GatePanel } from '@/components/gate/GatePanel'
 import { HealthPanel } from '@/components/health/HealthPanel'
+import { ZonePanel } from '@/components/zone/ZonePanel'
 
-type View = 'corridor' | 'kavach' | 'marl' | 'gate' | 'health'
+type View = 'corridor' | 'kavach' | 'marl' | 'gate' | 'zone' | 'health'
 
 export default function Dashboard() {
   const [activeView, setActiveView] = useState<View>('corridor')
@@ -24,6 +25,7 @@ export default function Dashboard() {
           {activeView === 'kavach' && <KavachPanel />}
           {activeView === 'marl' && <MARLPanel />}
           {activeView === 'gate' && <GatePanel />}
+          {activeView === 'zone' && <ZonePanel />}
           {activeView === 'health' && <HealthPanel />}
         </main>
       </div>
