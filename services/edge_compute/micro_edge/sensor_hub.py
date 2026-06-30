@@ -24,7 +24,10 @@ import time
 import threading
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional
+
+if TYPE_CHECKING:
+    from fastapi import FastAPI
 
 from prometheus_client import Counter, Gauge, Histogram, start_http_server
 

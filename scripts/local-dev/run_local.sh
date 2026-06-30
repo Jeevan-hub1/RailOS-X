@@ -141,7 +141,7 @@ run_tests() {
 
 start_frontend() {
     log "Starting Digital Twin frontend..."
-    cd "$PROJECT_ROOT/services/digital-twin/frontend"
+    cd "$PROJECT_ROOT/services/digital_twin/frontend"
     if [ ! -d "node_modules" ]; then
         npm install
     fi

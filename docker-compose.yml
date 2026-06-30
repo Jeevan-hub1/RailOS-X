@@ -4,13 +4,17 @@
 # Spins up all infrastructure dependencies + Python microservices for local dev.
 #
 # Usage:
-#   docker compose up -d              # Start infrastructure only (default profile)
-#   docker compose --profile all up   # Start infrastructure + all services
+#   docker compose up -d              # Start all infrastructure dependencies
 #
-# Individual services can be run natively (outside Docker) against the infra:
+# NOTE: This compose file provisions INFRASTRUCTURE ONLY (Kafka, PostgreSQL,
+# InfluxDB, Redis, MinIO + Kafka topic init). The Python microservices are run
+# natively against this infra — either individually:
 #   python -m services.kavach_advisory.kavach_advisory
 #   python -m services.authorization_gate.gate_service
 #   python -m services.marl_scheduler.service.scheduler_service
+# or all at once:
+#   ./scripts/local-dev/run_local.sh            # infra + all services
+#   python scripts/local-dev/start_services.py  # all services (infra assumed up)
 #
 # Infrastructure endpoints (after `docker compose up -d`):
 #   Kafka bootstrap:    localhost:9092
