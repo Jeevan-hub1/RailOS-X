@@ -5,14 +5,11 @@ Satisfies: Req 7 C2, Design §6.5
 """
 from __future__ import annotations
 
-import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-
 import pytest
 from hypothesis import given, settings, HealthCheck
 from hypothesis import strategies as st
 
-from constraints.conflict_checker import ConflictChecker
+from services.marl_scheduler.constraints.conflict_checker import ConflictChecker
 
 checker = ConflictChecker()
 
@@ -73,7 +70,7 @@ def proposal_strategy(draw):
 @settings(max_examples=1000, suppress_health_check=[HealthCheck.too_slow])
 def test_marl_scheduler_produces_conflict_free_proposals(disruptions):
     """Property 1: For all disruption inputs, generated proposals must be conflict-free."""
-    from service.scheduler_service import _generate_proposal
+    from services.marl_scheduler.service.scheduler_service import _generate_proposal
     for d in disruptions:
         proposal = _generate_proposal(d)
         if proposal is not None:

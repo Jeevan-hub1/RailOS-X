@@ -51,29 +51,8 @@ jobs:
         run: npm audit --omit=dev || true
 
   python-tests:
-    name: py · ${{ matrix.suite }}
+    name: python tests
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        # One isolated suite per cell. See scripts/run_tests.sh for why the
-        # suites must run in separate pytest processes.
-        suite:
-          - tests/pbt
-          - services/adapters/tests
-          - services/auth_middleware/tests
-          - services/defect_detector/tests
-          - services/delay_predictor/tests
-          - services/edge_node/buffer
-          - services/edge_node/heartbeat
-          - services/edge_node/tests
-          - services/edge_node/uploader
-          - services/federated_learning/tests
-          - services/kavach_advisory/tests
-          - services/maintenance_engine/tests
-          - services/marl_scheduler/tests
-          - services/pipeline/influxdb_writer/tests
-          - services/time_sync/tests
     steps:
       - uses: actions/checkout@v4
 
@@ -88,10 +67,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements-dev.txt
 
-      - name: Run suite
-        env:
-          PYTEST: python -m pytest
-        run: bash scripts/run_tests.sh "${{ matrix.suite }}"
+      - name: Run test suite (from repo root)
+        # The whole suite now runs from the repo root in one process. For
+        # focused, isolated per-service runs use scripts/run_tests.sh.
+        run: pytest -q
 
   dashboard-build:
     name: dashboard build

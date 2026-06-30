@@ -1,9 +1,7 @@
 """Pytest fixtures for delay-predictor tests."""
-import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-
 import pytest
-from data.synthetic_graph import make_synthetic_graph
+
+from services.delay_predictor.data.synthetic_graph import make_synthetic_graph
 
 
 @pytest.fixture

@@ -1,15 +1,14 @@
 #!/usr/bin/env bash
 ###############################################################################
-# RailOS-X — Python test runner (per-service)
+# RailOS-X — Python test runner (per-service / focused runs)
 #
-# Why per-service? Each service ships its own conftest.py that injects its
-# package root onto sys.path, and several services reuse top-level module names
-# (model, service, data, ...). Collecting everything in one pytest process
-# causes import collisions and Prometheus CollectorRegistry clashes. Running
-# each suite in its own pytest process keeps them isolated.
+# The full suite now also runs in one process from the repo root (`pytest`),
+# but this wrapper is handy for running one or a few suites in ISOLATED pytest
+# processes — useful when debugging cross-test state (Prometheus registries,
+# sys.path-based imports in a few services, etc.).
 #
 # Usage:
-#   ./scripts/run_tests.sh                 # run every suite
+#   ./scripts/run_tests.sh                 # run every suite (isolated processes)
 #   ./scripts/run_tests.sh services/adapters/tests [more...]   # run a subset
 #
 # Env:

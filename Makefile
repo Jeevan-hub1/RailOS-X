@@ -4,7 +4,7 @@
 PYTHON ?= python
 
 .DEFAULT_GOAL := help
-.PHONY: help install test test-one infra services stop dashboard dashboard-build
+.PHONY: help install test test-isolated test-one infra services stop dashboard dashboard-build
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -14,7 +14,10 @@ help: ## Show this help
 install: ## Install Python dev dependencies
 	$(PYTHON) -m pip install -r requirements-dev.txt
 
-test: ## Run all Python test suites (isolated per service)
+test: ## Run the full Python test suite (from repo root)
+	$(PYTHON) -m pytest
+
+test-isolated: ## Run all suites in isolated per-service processes
 	PYTEST="$(PYTHON) -m pytest" ./scripts/run_tests.sh
 
 test-one: ## Run a single suite, e.g. `make test-one SUITE=services/adapters/tests`
