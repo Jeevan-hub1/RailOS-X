@@ -1,0 +1,17 @@
+# RailOS-X — slim RUNTIME dependencies for the containerized (non-ML) services.
+# Used by the generic service image (Dockerfile). Heavy ML packages
+# (torch, mlflow, shap, ultralytics, torch-geometric, flwr) are intentionally
+# excluded — services that need them are run natively for now.
+fastapi==0.111.0
+uvicorn==0.30.0
+pydantic>=2.7.0
+numpy==1.26.4
+kafka-python==2.0.2
+influxdb-client==1.43.0
+psycopg2-binary==2.9.9
+redis==5.0.4
+prometheus-client==0.20.0
+httpx==0.27.0
+aiohttp==3.9.5
+jsonschema==4.22.0
+python-jose[cryptography]==3.3.0

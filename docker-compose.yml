@@ -4,16 +4,16 @@
 # Spins up all infrastructure dependencies + Python microservices for local dev.
 #
 # Usage:
-#   docker compose up -d              # Start all infrastructure dependencies
+#   docker compose up -d                    # Infrastructure only (Kafka, PG, ...)
+#   docker compose --profile services up    # Infrastructure + (non-ML) services
 #
-# NOTE: This compose file provisions INFRASTRUCTURE ONLY (Kafka, PostgreSQL,
-# InfluxDB, Redis, MinIO + Kafka topic init). The Python microservices are run
-# natively against this infra — either individually:
+# This file provisions the infrastructure AND, under the optional `services`
+# profile, the non-ML Python microservices (built from ./Dockerfile). ML-heavy
+# services are run natively against this infra:
+#   python -m services.delay_predictor.service.delay_predictor_service
+# or, for the lighter ones, individually / all at once:
 #   python -m services.kavach_advisory.kavach_advisory
-#   python -m services.authorization_gate.gate_service
-#   python -m services.marl_scheduler.service.scheduler_service
-# or all at once:
-#   ./scripts/local-dev/run_local.sh            # infra + all services
+#   ./scripts/local-dev/run_local.sh            # infra + all services (native)
 #   python scripts/local-dev/start_services.py  # all services (infra assumed up)
 #
 # Infrastructure endpoints (after `docker compose up -d`):
@@ -170,6 +170,79 @@ services:
         done
         echo "All topics created successfully."
     restart: "no"
+
+  # ══════════════════════════════════════════════════════════════════════════════
+  # APPLICATION SERVICES  (opt-in: `docker compose --profile services up`)
+  # All share one generic image (see Dockerfile); the service is chosen via the
+  # container command. ML-heavy services are run natively (see run_local.sh).
+  # ══════════════════════════════════════════════════════════════════════════════
+
+  kavach-advisory:
+    build: .
+    image: railos-x-service:local
+    container_name: railos-kavach
+    profiles: ["services"]
+    command: python -m services.kavach_advisory.kavach_advisory
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: "kafka:9092"
+      INFLUXDB_URL: "http://influxdb:8086"
+      INFLUXDB_TOKEN: "railos-dev-token"
+      INFLUXDB_ORG: "railos"
+      REDIS_URL: "redis://redis:6379"
+      APP_PORT: "8082"
+    ports:
+      - "8082:8082"
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+  authorization-gate:
+    build: .
+    image: railos-x-service:local
+    container_name: railos-authgate
+    profiles: ["services"]
+    command: python -m services.authorization_gate.gate_service
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: "kafka:9092"
+      DB_URL: "postgresql://railos:railos-dev@postgres:5432/railos"
+      REDIS_URL: "redis://redis:6379"
+    ports:
+      - "8087:8087"
+    depends_on:
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+
+  marl-scheduler:
+    build: .
+    image: railos-x-service:local
+    container_name: railos-marl
+    profiles: ["services"]
+    command: python -m services.marl_scheduler.service.scheduler_service
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: "kafka:9092"
+      REDIS_URL: "redis://redis:6379"
+    ports:
+      - "8081:8081"
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+  digital-twin:
+    build: .
+    image: railos-x-service:local
+    container_name: railos-digital-twin
+    profiles: ["services"]
+    command: python -m services.digital_twin.backend.websocket_server
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: "kafka:9092"
+      APP_PORT: "3001"
+    ports:
+      - "3001:3001"
+    depends_on:
+      kafka:
+        condition: service_healthy
 
 volumes:
   kafka_data:
