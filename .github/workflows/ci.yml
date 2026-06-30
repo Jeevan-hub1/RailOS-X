@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel superseded runs on the same ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python-tests:
+    name: py · ${{ matrix.suite }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # One isolated suite per cell. See scripts/run_tests.sh for why the
+        # suites must run in separate pytest processes.
+        suite:
+          - tests/pbt
+          - services/adapters/tests
+          - services/auth_middleware/tests
+          - services/defect_detector/tests
+          - services/delay_predictor/tests
+          - services/edge_node/buffer
+          - services/edge_node/heartbeat
+          - services/edge_node/tests
+          - services/edge_node/uploader
+          - services/federated_learning/tests
+          - services/kavach_advisory/tests
+          - services/maintenance_engine/tests
+          - services/marl_scheduler/tests
+          - services/pipeline/influxdb_writer/tests
+          - services/time_sync/tests
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Run suite
+        env:
+          PYTEST: python -m pytest
+        run: bash scripts/run_tests.sh "${{ matrix.suite }}"
+
+  dashboard-build:
+    name: dashboard build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dashboard
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
