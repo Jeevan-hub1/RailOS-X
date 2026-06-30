@@ -1,10 +1,24 @@
 /**
- * RailOS-X API Client — connects to running backend services
+ * RailOS-X API Client — connects to running backend services.
+ * Attaches the Keycloak Bearer token (when signed in via SSO) so the backend
+ * Authorization Gate / auth_middleware can enforce RBAC.
  */
+import { getToken } from './auth'
 
 const KAVACH_URL = process.env.NEXT_PUBLIC_KAVACH_URL || 'http://localhost:8082'
 const MARL_URL = process.env.NEXT_PUBLIC_MARL_URL || 'http://localhost:8081'
 const GATE_URL = process.env.NEXT_PUBLIC_GATE_URL || 'http://localhost:8087'
+
+function authHeaders(): Record<string, string> {
+  const token = getToken()
+  return token ? { Authorization: `Bearer ${token}` } : {}
+}
+
+/** fetch wrapper that injects the Authorization header when authenticated. */
+async function apiFetch(input: string, init: RequestInit = {}): Promise<Response> {
+  const headers = { ...(init.headers as Record<string, string> | undefined), ...authHeaders() }
+  return fetch(input, { ...init, headers })
+}
 
 // ── Kavach Advisory ──────────────────────────────────────────────────────────
 export interface KavachBrakingPhases {
@@ -60,7 +74,7 @@ export interface KavachRequestParams {
 export async function getKavachAdvisory(
   params: KavachRequestParams
 ): Promise<KavachAdvisory | { status: string }> {
-  const res = await fetch(`${KAVACH_URL}/api/v1/kavach-advisory`, {
+  const res = await apiFetch(`${KAVACH_URL}/api/v1/kavach-advisory`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(params),
@@ -69,7 +83,7 @@ export async function getKavachAdvisory(
 }
 
 export async function getKavachHealth(): Promise<{ status: string }> {
-  const res = await fetch(`${KAVACH_URL}/health`)
+  const res = await apiFetch(`${KAVACH_URL}/health`)
   return res.json()
 }
 
@@ -131,7 +145,7 @@ export async function submitDisruption(
   affectedTrains: string[],
   affectedSegment?: string
 ): Promise<MARLProposal> {
-  const res = await fetch(`${MARL_URL}/api/v1/scheduler/propose`, {
+  const res = await apiFetch(`${MARL_URL}/api/v1/scheduler/propose`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ disruptionEventId, type, affectedTrains, affectedSegment }),
@@ -140,7 +154,7 @@ export async function submitDisruption(
 }
 
 export async function getMARLHistory(): Promise<{ proposals: MARLProposal[] }> {
-  const res = await fetch(`${MARL_URL}/api/v1/scheduler/history`)
+  const res = await apiFetch(`${MARL_URL}/api/v1/scheduler/history`)
   return res.json()
 }
 
@@ -148,12 +162,12 @@ export async function getMARLCorridor(): Promise<{ segments: Array<{
   segmentId: string; startKm: number; endKm: number; maxSpeedKmh: number;
   capacity: number; hasLoop: boolean; platformCount: number
 }> }> {
-  const res = await fetch(`${MARL_URL}/api/v1/scheduler/corridor`)
+  const res = await apiFetch(`${MARL_URL}/api/v1/scheduler/corridor`)
   return res.json()
 }
 
 export async function getMARLHealth(): Promise<{ status: string; modelVersion: string }> {
-  const res = await fetch(`${MARL_URL}/health`)
+  const res = await apiFetch(`${MARL_URL}/health`)
   return res.json()
 }
 
@@ -218,7 +232,7 @@ export async function enqueueAdvisory(
   advisoryId: string, payload: Record<string, any>,
   probability: number, severity: string, source?: string
 ): Promise<{ advisoryId: string; riskScore: number; riskTier: number; escalationTimeoutS: number }> {
-  const res = await fetch(`${GATE_URL}/api/v1/gate/enqueue`, {
+  const res = await apiFetch(`${GATE_URL}/api/v1/gate/enqueue`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ advisoryId, payload, probability, severity, source: source || 'simulation' }),
@@ -227,14 +241,14 @@ export async function enqueueAdvisory(
 }
 
 export async function getGateQueue(): Promise<GateQueue> {
-  const res = await fetch(`${GATE_URL}/api/v1/gate/queue`)
+  const res = await apiFetch(`${GATE_URL}/api/v1/gate/queue`)
   return res.json()
 }
 
 export async function authorizeAdvisory(
   advisoryId: string, controllerId: string, action: 'AUTHORIZE' | 'REJECT', reason?: string
 ): Promise<{ status: string; decisionTimeS?: number; authorizedBy?: string; rejectedBy?: string }> {
-  const res = await fetch(`${GATE_URL}/api/v1/gate/authorize`, {
+  const res = await apiFetch(`${GATE_URL}/api/v1/gate/authorize`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ advisoryId, controllerId, action, reason: reason || '' }),
@@ -243,21 +257,21 @@ export async function authorizeAdvisory(
 }
 
 export async function getGateStats(): Promise<GateStats> {
-  const res = await fetch(`${GATE_URL}/api/v1/gate/stats`)
+  const res = await apiFetch(`${GATE_URL}/api/v1/gate/stats`)
   return res.json()
 }
 
 export async function getGateAudit(): Promise<{ entries: GateAuditEntry[] }> {
-  const res = await fetch(`${GATE_URL}/api/v1/gate/audit`)
+  const res = await apiFetch(`${GATE_URL}/api/v1/gate/audit`)
   return res.json()
 }
 
 export async function getGateControllers(): Promise<{ controllers: GateController[] }> {
-  const res = await fetch(`${GATE_URL}/api/v1/gate/controllers`)
+  const res = await apiFetch(`${GATE_URL}/api/v1/gate/controllers`)
   return res.json()
 }
 
 export async function getGateHealth(): Promise<{ status: string; gate: string; queueDepth: number }> {
-  const res = await fetch(`${GATE_URL}/health`)
+  const res = await apiFetch(`${GATE_URL}/health`)
   return res.json()
 }

@@ -1,0 +1,74 @@
+{
+  "realm": "railos",
+  "enabled": true,
+  "sslRequired": "none",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "accessTokenLifespan": 1800,
+  "roles": {
+    "realm": [
+      { "name": "Operations_Controller", "description": "Authorize advisories, run scheduler proposals" },
+      { "name": "Security_Officer", "description": "Acknowledge security anomalies, view audit" },
+      { "name": "Engineering_Team", "description": "Model lifecycle, rollback, maintenance" },
+      { "name": "Governance_Officer", "description": "Lineage, retention, audit oversight" }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "railos-dashboard",
+      "name": "RailOS-X Operations Dashboard",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "redirectUris": ["http://localhost:3000/*"],
+      "webOrigins": ["http://localhost:3000", "+"],
+      "attributes": {
+        "pkce.code.challenge.method": "S256"
+      }
+    }
+  ],
+  "users": [
+    {
+      "username": "controller",
+      "enabled": true,
+      "email": "controller@railos.in",
+      "emailVerified": true,
+      "firstName": "Ops",
+      "lastName": "Controller",
+      "credentials": [{ "type": "password", "value": "railos-demo", "temporary": false }],
+      "realmRoles": ["Operations_Controller"]
+    },
+    {
+      "username": "security",
+      "enabled": true,
+      "email": "security@railos.in",
+      "emailVerified": true,
+      "firstName": "Sec",
+      "lastName": "Officer",
+      "credentials": [{ "type": "password", "value": "railos-demo", "temporary": false }],
+      "realmRoles": ["Security_Officer"]
+    },
+    {
+      "username": "engineer",
+      "enabled": true,
+      "email": "engineer@railos.in",
+      "emailVerified": true,
+      "firstName": "Eng",
+      "lastName": "Team",
+      "credentials": [{ "type": "password", "value": "railos-demo", "temporary": false }],
+      "realmRoles": ["Engineering_Team"]
+    },
+    {
+      "username": "governance",
+      "enabled": true,
+      "email": "governance@railos.in",
+      "emailVerified": true,
+      "firstName": "Gov",
+      "lastName": "Officer",
+      "credentials": [{ "type": "password", "value": "railos-demo", "temporary": false }],
+      "realmRoles": ["Governance_Officer"]
+    }
+  ]
+}

@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { LogOut } from 'lucide-react'
-import { getSession, signOut, roleLabel, type DemoSession } from '@/lib/auth'
+import { getSession, signOut, roleLabel, type Session } from '@/lib/auth'
 
 type View = 'corridor' | 'kavach' | 'marl' | 'gate' | 'zone' | 'health'
 
@@ -25,7 +25,7 @@ const VIEW_TITLES: Record<View, { title: string; subtitle: string }> = {
 
 export function Header({ activeView }: { activeView: View }) {
   const [time, setTime] = useState('')
-  const [session, setSession] = useState<DemoSession | null>(null)
+  const [session, setSession] = useState<Session | null>(null)
   const router = useRouter()
 
   useEffect(() => {

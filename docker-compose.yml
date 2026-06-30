@@ -6,10 +6,12 @@
 # Usage:
 #   docker compose up -d                    # Infrastructure only (Kafka, PG, ...)
 #   docker compose --profile services up    # Infrastructure + (non-ML) services
+#   docker compose --profile auth up        # + Keycloak OIDC identity provider
 #
 # This file provisions the infrastructure AND, under the optional `services`
-# profile, the non-ML Python microservices (built from ./Dockerfile). ML-heavy
-# services are run natively against this infra:
+# profile, the non-ML Python microservices (built from ./Dockerfile), and under
+# the optional `auth` profile, a Keycloak IdP (realm seeded from
+# infra/keycloak/railos-realm.json). ML-heavy services are run natively:
 #   python -m services.delay_predictor.service.delay_predictor_service
 # or, for the lighter ones, individually / all at once:
 #   python -m services.kavach_advisory.kavach_advisory
@@ -243,6 +245,27 @@ services:
     depends_on:
       kafka:
         condition: service_healthy
+
+  # ── Keycloak (OIDC identity provider) — opt-in: `--profile auth` ───────────
+  keycloak:
+    image: quay.io/keycloak/keycloak:24.0
+    container_name: railos-keycloak
+    profiles: ["auth"]
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+      KC_HTTP_PORT: "8080"
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./infra/keycloak/railos-realm.json:/opt/keycloak/data/import/railos-realm.json:ro
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/localhost/8080 && echo -e 'GET /realms/railos HTTP/1.0\\r\\n\\r\\n' >&3 && cat <&3 | head -1 | grep -q 200"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 40s
 
 volumes:
   kafka_data:
