@@ -31,14 +31,19 @@ from prometheus_client import Counter, Histogram, Gauge, start_http_server
 from pydantic import BaseModel
 
 try:
+    # When imported as part of the `services.marl_scheduler` package
     from ..constraints.conflict_checker import ConflictChecker, ConflictViolation
 except (ImportError, ValueError):
-    # Fallback if running outside package context
-    class ConflictViolation(RuntimeError):
-        pass
-    class ConflictChecker:
-        def assert_conflict_free(self, proposal):
+    try:
+        # When the service directory itself is on sys.path (tests / standalone)
+        from constraints.conflict_checker import ConflictChecker, ConflictViolation
+    except (ImportError, ValueError):
+        # Last-resort fallback if the constraint layer is genuinely unavailable
+        class ConflictViolation(RuntimeError):
             pass
+        class ConflictChecker:
+            def assert_conflict_free(self, proposal):
+                pass
 
 log = logging.getLogger(__name__)
 logging.basicConfig(

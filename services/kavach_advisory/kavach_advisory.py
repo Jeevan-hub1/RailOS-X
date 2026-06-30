@@ -310,7 +310,16 @@ def compute_braking_distance(
     """
     v_ms = speed_kmh / 3.6
     if v_ms <= 0:
-        return {"total_m": 0.0, "phases": {}, "decel_profile": []}
+        return {
+            "total_m": 0.0,
+            "reaction_m": 0.0,
+            "propagation_m": 0.0,
+            "braking_m": 0.0,
+            "total_time_s": 0.0,
+            "peak_decel_ms2": 0.0,
+            "final_fade": brake_fade_factor(0.0, 0.0, ambient_temp_c),
+            "decel_profile": [],
+        }
 
     mass_kg = train.mass_tonnes * 1000.0
     dt = 0.1  # integration time step (seconds)
@@ -478,6 +487,45 @@ def kavach_certified_stopping_distance(speed_kmh: float) -> float:
 
 
 # ── Main Advisory Computation ─────────────────────────────────────────────────
+def advisory_stopping_distance(
+    speed_kmh: float,
+    lat: float,
+    lon: float,
+    vibration_rms: Optional[float],
+    humidity_pct: float = 50.0,
+    headwind_kmh: float = 0.0,
+    ambient_temp_c: float = 35.0,
+    train_type: str = "default",
+) -> Optional[float]:
+    """Return the advisory stopping distance (metres) for the given conditions.
+
+    Uses the advanced multi-phase braking model and enforces the safety
+    invariant that the advisory distance is never shorter than the certified
+    Kavach 4.0 distance (Req 10 C3). Returns None when required sensor data
+    (vibration_rms) is unavailable.
+    """
+    if vibration_rms is None:
+        return None
+
+    train = TRAIN_CONFIGS.get(train_type, _active_train)
+    mu = estimate_adhesion(vibration_rms, speed_kmh, humidity_pct)
+    theta = lookup_track_gradient(lat, lon)
+    curve_radius = lookup_track_curvature(lat, lon)
+
+    braking = compute_braking_distance(
+        speed_kmh=speed_kmh,
+        mu=mu,
+        theta_rad=theta,
+        train=train,
+        curve_radius_m=curve_radius,
+        headwind_kmh=headwind_kmh,
+        ambient_temp_c=ambient_temp_c,
+    )
+
+    # Safety invariant: advisory must be >= certified (Req 10 C3)
+    return max(braking["total_m"], kavach_certified_stopping_distance(speed_kmh))
+
+
 def compute_advisory(
     speed_kmh: float,
     lat: float,
@@ -535,7 +583,7 @@ def compute_advisory(
 
     return {
         "alertType":              "KAVACH_ADVISORY",
-        "label":                  "ADVISORY -- NOT CERTIFIED",
+        "label":                  "ADVISORY — NOT CERTIFIED",
         "advisoryStoppingDist_m": round(adv_dist, 2),
         "certifiedStoppingDist_m": round(cert_dist, 2),
         "speedKmh":               speed_kmh,

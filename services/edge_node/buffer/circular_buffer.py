@@ -109,3 +109,8 @@ class CircularBuffer:
     def overflow_count(self) -> int:
         with self._lock:
             return self._conn.execute("SELECT COUNT(*) FROM overflow_log").fetchone()[0]
+
+    def close(self) -> None:
+        """Close the underlying SQLite connection."""
+        with self._lock:
+            self._conn.close()
