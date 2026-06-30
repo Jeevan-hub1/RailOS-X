@@ -27,6 +27,10 @@ htmlcov/
 node_modules/
 .next/
 
+# Local env files (do not commit secrets/local config; keep .env.local.example)
+.env.local
+.env*.local
+
 # Docker volumes
 kafka_data/
 postgres_data/

@@ -38,13 +38,13 @@ warn() { echo -e "${YELLOW}[RailOS]${NC} $*"; }
 err()  { echo -e "${RED}[RailOS]${NC} $*" >&2; }
 
 # ── Environment Variables for Local Dev ──────────────────────────────────────
-export KAFKA_BOOTSTRAP_SERVERS="localhost:9092"
+export KAFKA_BOOTSTRAP_SERVERS="localhost:9094"
 export DB_URL="postgresql://railos:railos-dev@localhost:5433/railos"
 export INFLUXDB_URL="http://localhost:8086"
 export INFLUXDB_TOKEN="railos-dev-token"
 export INFLUXDB_ORG="railos"
 export INFLUXDB_BUCKET="sensor-telemetry"
-export REDIS_URL="redis://localhost:6379"
+export REDIS_URL="redis://localhost:6380"
 export MLFLOW_TRACKING_URI="http://localhost:5000"
 export MINIO_ENDPOINT="http://localhost:9000"
 export PYTHONPATH="$PROJECT_ROOT"
@@ -68,9 +68,9 @@ start_infra() {
     log "Infrastructure ready!"
     echo ""
     echo "  Kafka:       localhost:9094"
-    echo "  PostgreSQL:  localhost:5432  (railos/railos-dev)"
+    echo "  PostgreSQL:  localhost:5433  (railos/railos-dev)"
     echo "  InfluxDB:    localhost:8086  (token: railos-dev-token)"
-    echo "  Redis:       localhost:6379"
+    echo "  Redis:       localhost:6380"
     echo "  MinIO:       localhost:9000  (minioadmin/minioadmin)"
     echo "  MinIO UI:    localhost:9001"
     echo ""
@@ -149,6 +149,23 @@ start_frontend() {
     log "Digital Twin UI: http://localhost:3001"
 }
 
+start_dashboard() {
+    log "Starting RailOS-X Operations Dashboard (Next.js)..."
+    cd "$PROJECT_ROOT/dashboard"
+    if [ ! -d "node_modules" ]; then
+        log "  Installing dashboard dependencies (first run)..."
+        npm install
+    fi
+    if [ ! -f ".env.local" ] && [ -f ".env.local.example" ]; then
+        warn "  No .env.local found — copying .env.local.example (edit it to point at your services)."
+        cp .env.local.example .env.local
+    fi
+    log "  Landing page: http://localhost:3000"
+    log "  Login:        http://localhost:3000/login"
+    log "  Console:      http://localhost:3000/dashboard"
+    npm run dev
+}
+
 show_help() {
     echo ""
     echo "RailOS-X Local Development Launcher"
@@ -160,7 +177,8 @@ show_help() {
     echo "  infra      Start infrastructure only (Docker containers)"
     echo "  services   Start Python services only (assumes infra running)"
     echo "  tests      Run property-based tests"
-    echo "  frontend   Start Digital Twin React frontend"
+    echo "  frontend   Start Digital Twin React frontend (port 3001)"
+    echo "  dashboard  Start the Operations Dashboard (Next.js, port 3000)"
     echo "  stop       Stop all containers and background services"
     echo "  install    Install Python dependencies"
     echo "  help       Show this help message"
@@ -186,9 +204,13 @@ case "${1:-full}" in
     frontend)
         start_frontend
         ;;
+    dashboard)
+        start_dashboard
+        ;;
     stop)
         stop_infra
-        pkill -f "uvicorn.*railos" 2>/dev/null || true
+        pkill -f "uvicorn services\." 2>/dev/null || true
+        pkill -f "next dev" 2>/dev/null || true
         log "All stopped."
         ;;
     install)

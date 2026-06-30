@@ -10,7 +10,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 os.environ.setdefault("KAFKA_BOOTSTRAP_SERVERS", "localhost:9094")
-os.environ.setdefault("DB_URL", "postgresql://railos:railos-dev@localhost:5432/railos")
+os.environ.setdefault("DB_URL", "postgresql://railos:railos-dev@localhost:5433/railos")
 
 
 def start_kavach():
