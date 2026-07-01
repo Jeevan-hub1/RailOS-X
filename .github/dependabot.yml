@@ -7,8 +7,11 @@ updates:
       interval: weekly
     open-pull-requests-limit: 5
     groups:
-      python-deps:
+      # Group only non-breaking updates so security/maintenance PRs stay small
+      # and reviewable. Majors come as separate, clearly-labelled PRs.
+      python-minor-patch:
         patterns: ["*"]
+        update-types: ["minor", "patch"]
 
   # Dashboard (npm)
   - package-ecosystem: npm
@@ -17,8 +20,29 @@ updates:
       interval: weekly
     open-pull-requests-limit: 5
     groups:
-      npm-deps:
+      npm-minor-patch:
         patterns: ["*"]
+        update-types: ["minor", "patch"]
+    ignore:
+      # Framework majors are deliberate migrations (e.g. Tailwind v4, Next 16,
+      # React 19), not automated bumps — handle them in dedicated PRs. This
+      # prevents Dependabot from opening a breaking grouped mega-upgrade.
+      - dependency-name: "next"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "react"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "react-dom"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@types/react"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "tailwindcss"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "recharts"
+        update-types: ["version-update:semver-major"]
 
   # GitHub Actions
   - package-ecosystem: github-actions
