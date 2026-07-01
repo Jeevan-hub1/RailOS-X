@@ -7,7 +7,6 @@ import {
   Activity,
   Network,
   ArrowRight,
-  Github,
   Gauge,
   Lock,
 } from 'lucide-react'
@@ -92,7 +91,7 @@ export default function Landing() {
             rel="noreferrer"
             className="hidden sm:flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-slate-300 hover:text-white hover:bg-slate-800/60 transition-colors"
           >
-            <Github className="w-4 h-4" />
+            <GitBranch className="w-4 h-4" />
             GitHub
           </a>
           <Link
@@ -136,7 +135,7 @@ export default function Landing() {
               rel="noreferrer"
               className="w-full sm:w-auto flex items-center justify-center gap-2 px-6 py-3 rounded-xl text-sm font-semibold border border-slate-700 text-slate-200 hover:bg-slate-800/60 transition-colors"
             >
-              <Github className="w-4 h-4" />
+              <GitBranch className="w-4 h-4" />
               View Source
             </a>
           </div>
