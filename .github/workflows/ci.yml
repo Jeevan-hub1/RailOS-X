@@ -43,7 +43,7 @@ jobs:
         run: |
           pip install pip-audit==2.7.3
           pip-audit -r requirements-dev.txt || true
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: '22'
       - name: npm audit (non-blocking)
@@ -81,7 +81,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: '22'
           cache: npm
