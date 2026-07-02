@@ -58,7 +58,8 @@ def write_config(category: str, updates: dict[str, Any], identity: str) -> dict:
         try:
             current = client.secrets.kv.v2.read_secret_version(
                 path=path.replace("secret/", ""))["data"]["data"]
-        except Exception:
+        except Exception as exc:
+            log.warning("Could not read current Vault state for %s: %s — starting from empty", category, exc)
             current = {}
         merged = {**current, **updates}
         client.secrets.kv.v2.create_or_update_secret(

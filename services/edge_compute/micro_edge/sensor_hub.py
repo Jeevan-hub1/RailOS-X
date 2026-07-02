@@ -560,8 +560,8 @@ class SensorHub:
         if self._producer:
             try:
                 self._producer.flush(timeout=2)
-            except Exception:
-                pass
+            except Exception as exc:
+                log.warning("Kafka flush failed during shutdown: %s", exc)
 
 
 # ══════════════════════════════════════════════════════════════════════════════

@@ -59,14 +59,22 @@ def create_hazard(entry: HazardEntry) -> dict:
         "created_by":    entry.createdBy,
         "created_at":    datetime.now(timezone.utc).isoformat(),
     }
-    _insert_hazard(record)
+    try:
+        _insert_hazard(record)
+    except Exception as exc:
+        log.error("Hazard register insert failed: %s", exc)
+        raise HTTPException(status_code=503, detail="Hazard record could not be persisted")
     return record
 
 
 @app.get("/api/v1/hazards")
 def list_hazards(subsystem: Optional[str] = None) -> dict:
     """List all hazard register entries."""
-    entries = _query_hazards(subsystem)
+    try:
+        entries = _query_hazards(subsystem)
+    except Exception as exc:
+        log.error("Hazard register query failed: %s", exc)
+        raise HTTPException(status_code=503, detail="Hazard register database unavailable")
     return {"hazards": entries, "count": len(entries)}
 
 
@@ -79,9 +87,10 @@ def flag_for_review(payload: dict) -> dict:
 
 
 def _insert_hazard(record: dict) -> None:
+    """Insert hazard record. Raises on failure so callers can report errors."""
+    import psycopg2
+    conn = psycopg2.connect(DB_URL)
     try:
-        import psycopg2
-        conn = psycopg2.connect(DB_URL)
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -96,15 +105,19 @@ def _insert_hazard(record: dict) -> None:
                  record["residual_risk"], record["mitigation"], record.get("evidence_ref"),
                  record["approval_status"], record["created_at"], record["created_by"]),
             )
-        conn.commit(); conn.close()
-    except Exception as exc:
-        log.error("Hazard register insert failed: %s", exc)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def _query_hazards(subsystem: Optional[str] = None) -> list[dict]:
+    """Query hazard records. Raises on failure so callers can report errors."""
+    import psycopg2
+    conn = psycopg2.connect(DB_URL)
     try:
-        import psycopg2
-        conn = psycopg2.connect(DB_URL)
         with conn.cursor() as cur:
             if subsystem:
                 cur.execute(
@@ -117,12 +130,10 @@ def _query_hazards(subsystem: Optional[str] = None) -> list[dict]:
                     "ORDER BY created_at DESC LIMIT 100"
                 )
             rows = cur.fetchall()
-        conn.close()
         return [{"hazardId": r[0], "description": r[1], "approvalStatus": r[2]}
                 for r in rows]
-    except Exception as exc:
-        log.error("Hazard register query failed: %s", exc)
-        return []
+    finally:
+        conn.close()
 
 
 if __name__ == "__main__":

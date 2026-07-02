@@ -199,7 +199,8 @@ def run_consumer_loop() -> None:
                 float(record.get("payload_size", 0)),
                 float(record.get("src_ip_entropy", 0)),
             ]
-        except Exception:
+        except Exception as exc:
+            log.warning("SCADA feature extraction failed, using zeros: %s", exc)
             features = [0.0] * LSTMAutoencoder.N_FEATURES
 
         alert = detector.process_message(raw, features)

@@ -60,7 +60,11 @@ def register_dataset(req: DatasetRegistration) -> dict:
         approved_by=req.approvedBy,
         dataset_name=req.datasetName,
     )
-    _write_to_db(record)
+    try:
+        _write_to_db(record)
+    except Exception as exc:
+        log.error("Dataset DB write failed: %s", exc)
+        raise HTTPException(status_code=503, detail="Dataset record could not be persisted")
     return record
 
 
@@ -78,16 +82,21 @@ def link_dataset_to_model(body: dict) -> dict:
 @app.get("/api/v1/datasets/{version_id}/provenance")
 def get_provenance(version_id: str) -> dict:
     """Return provenance record for a dataset version (Task 26.3)."""
-    record = _query_provenance(version_id)
+    try:
+        record = _query_provenance(version_id)
+    except Exception as exc:
+        log.error("Dataset DB query failed: %s", exc)
+        raise HTTPException(status_code=503, detail="Dataset database unavailable")
     if not record:
         raise HTTPException(404, detail=f"No provenance found for version {version_id}")
     return record
 
 
 def _write_to_db(record: dict) -> None:
+    """Write dataset version record. Raises on failure so callers can report errors."""
+    import psycopg2
+    conn = psycopg2.connect(DB_URL)
     try:
-        import psycopg2
-        conn = psycopg2.connect(DB_URL)
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -103,15 +112,19 @@ def _write_to_db(record: dict) -> None:
                  record["annotationToolVersion"], record["timestampRangeStart"],
                  record["timestampRangeEnd"], record["approvedBy"], record["registeredAt"]),
             )
-        conn.commit(); conn.close()
-    except Exception as exc:
-        log.error("Dataset DB write failed: %s", exc)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def _query_provenance(version_id: str) -> dict | None:
+    """Query dataset provenance. Raises on failure so callers can report errors."""
+    import psycopg2
+    conn = psycopg2.connect(DB_URL)
     try:
-        import psycopg2
-        conn = psycopg2.connect(DB_URL)
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT * FROM dataset_versions WHERE dataset_version_id=%s",
@@ -119,11 +132,9 @@ def _query_provenance(version_id: str) -> dict | None:
             )
             row = cur.fetchone()
             cols = [d[0] for d in cur.description] if cur.description else []
-        conn.close()
         return dict(zip(cols, row)) if row else None
-    except Exception as exc:
-        log.error("Dataset DB query failed: %s", exc)
-        return None
+    finally:
+        conn.close()
 
 
 if __name__ == "__main__":

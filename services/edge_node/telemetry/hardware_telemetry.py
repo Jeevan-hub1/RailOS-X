@@ -65,8 +65,8 @@ def _read_hardware_metrics() -> dict:
         cpu_temps = temps.get("cpu_thermal", temps.get("coretemp", []))
         if cpu_temps:
             metrics["cpu_temp_c"] = cpu_temps[0].current
-    except Exception:
-        pass
+    except Exception as exc:
+        log.warning("psutil metric collection failed: %s", exc)
 
     try:
         # Jetson GPU stats via jtop
@@ -75,8 +75,10 @@ def _read_hardware_metrics() -> dict:
             if jetson.ok():
                 metrics["gpu_utilization_pct"] = jetson.gpu.get("status", {}).get("val", 0)
                 metrics["cpu_temp_c"]           = jetson.temperature.get("CPU", metrics["cpu_temp_c"])
-    except Exception:
-        pass
+    except ImportError:
+        pass  # jtop not available on non-Jetson hardware
+    except Exception as exc:
+        log.warning("Jetson GPU metric collection failed: %s", exc)
 
     return metrics
 

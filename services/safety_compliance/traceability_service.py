@@ -57,14 +57,22 @@ def create_record(rec: TraceabilityRecord) -> dict:
         "result":          rec.evidenceResult,
         "timestamp_utc":   datetime.now(timezone.utc).isoformat(),
     }
-    _write_to_db(entry)
+    try:
+        _write_to_db(entry)
+    except Exception as exc:
+        log.error("Traceability DB write failed: %s", exc)
+        raise HTTPException(status_code=503, detail="Traceability record could not be persisted")
     return entry
 
 
 @app.get("/api/v1/traceability/{subsystem_version}")
 def get_report(subsystem_version: str) -> dict:
     """Generate traceability report for a subsystem version (Task 21.2)."""
-    records = _query_db(subsystem_version)
+    try:
+        records = _query_db(subsystem_version)
+    except Exception as exc:
+        log.error("Traceability DB query failed: %s", exc)
+        raise HTTPException(status_code=503, detail="Traceability database unavailable")
     if not records:
         raise HTTPException(404, detail=f"No traceability records for version {subsystem_version}")
     return {
@@ -75,9 +83,10 @@ def get_report(subsystem_version: str) -> dict:
 
 
 def _write_to_db(entry: dict) -> None:
+    """Write traceability entry to DB. Raises on failure so callers can report errors."""
+    import psycopg2
+    conn = psycopg2.connect(DB_URL)
     try:
-        import psycopg2
-        conn = psycopg2.connect(DB_URL)
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -91,15 +100,19 @@ def _write_to_db(entry: dict) -> None:
                  entry.get("mlflowRunId"), entry.get("deployedVersion"),
                  entry["result"], entry["timestamp_utc"]),
             )
-        conn.commit(); conn.close()
-    except Exception as exc:
-        log.error("Traceability DB write failed: %s", exc)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def _query_db(version: str) -> list[dict]:
+    """Query traceability records. Raises on failure so callers can report errors."""
+    import psycopg2
+    conn = psycopg2.connect(DB_URL)
     try:
-        import psycopg2
-        conn = psycopg2.connect(DB_URL)
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT trace_id, requirement_id, result FROM traceability_matrix "
@@ -107,11 +120,9 @@ def _query_db(version: str) -> list[dict]:
                 (version,),
             )
             rows = cur.fetchall()
-        conn.close()
         return [{"traceId": r[0], "requirementId": r[1], "result": r[2]} for r in rows]
-    except Exception as exc:
-        log.error("Traceability DB query failed: %s", exc)
-        return []
+    finally:
+        conn.close()
 
 
 if __name__ == "__main__":

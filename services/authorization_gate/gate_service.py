@@ -84,15 +84,16 @@ def _get_db_connection():
                     return None
     try:
         return _db_pool.getconn()
-    except Exception:
+    except Exception as exc:
+        log.error("DB connection acquisition failed: %s", exc)
         return None
 
 def _return_db_connection(conn):
     if _db_pool and conn:
         try:
             _db_pool.putconn(conn)
-        except Exception:
-            pass
+        except Exception as exc:
+            log.warning("Failed to return DB connection to pool: %s", exc)
 
 # ── Controller Roles ─────────────────────────────────────────────────────────
 CONTROLLER_ROLES = {
