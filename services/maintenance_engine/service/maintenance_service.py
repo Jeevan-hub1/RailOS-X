@@ -19,7 +19,6 @@ import logging
 import os
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
 from typing import Any, Optional
 
 import numpy as np
@@ -36,10 +35,15 @@ _HERE = os.path.dirname(__file__)
 _ENGINE_ROOT = os.path.dirname(_HERE)
 if _ENGINE_ROOT not in sys.path:
     sys.path.insert(0, _ENGINE_ROOT)
+_SERVICES_ROOT = os.path.dirname(_ENGINE_ROOT)
+if _SERVICES_ROOT not in sys.path:
+    sys.path.insert(0, _SERVICES_ROOT)
 
 from model.lstm_model import MaintenanceLSTM
 from model.conformal_wrapper import ConformalMaintenanceWrapper
 from service.shap_attribution import compute_shap_top3
+from common.risk_scoring import compute_risk_score, compute_risk_tier
+from common.datetime_utils import now_iso
 
 log = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -54,10 +58,6 @@ MODEL_PATH: Optional[str]     = os.getenv("MODEL_PATH")
 FEATURES_TOPIC: str           = "train.features.maintenance"
 ADVISORIES_TOPIC: str         = "maintenance.advisories"
 PROMETHEUS_PORT: int          = int(os.getenv("PROMETHEUS_PORT", "9090"))
-
-# Risk scoring constants (Design §6.2, Task 14.1)
-SEVERITY_WEIGHT_HIGH: float = 3.0   # Maintenance advisory is severity HIGH
-RISK_SCORE_CAP: float       = 4.0
 
 # Horizon hours published in every maintenance advisory (Req 4)
 HORIZON_HOURS: int = 72
@@ -79,27 +79,6 @@ INFERENCE_LATENCY = Histogram(
     "End-to-end inference + advisory publish latency",
     buckets=[0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0],
 )
-
-
-# ---------------------------------------------------------------------------
-# Risk scoring helpers (Task 14.1–14.2)
-# ---------------------------------------------------------------------------
-def compute_risk_score(failure_probability: float, severity_weight: float = SEVERITY_WEIGHT_HIGH) -> float:
-    """riskScore = failure_probability × severity_weight, capped at 4.0."""
-    return min(failure_probability * severity_weight, RISK_SCORE_CAP)
-
-
-def compute_risk_tier(risk_score: float) -> int:
-    """
-    Tier 1: riskScore ≥ 3.2  (dual-auth)
-    Tier 2: 2.0 ≤ riskScore < 3.2  (single-auth)
-    Tier 3: riskScore < 2.0  (standard)
-    """
-    if risk_score >= 3.2:
-        return 1
-    if risk_score >= 2.0:
-        return 2
-    return 3
 
 
 # ---------------------------------------------------------------------------
@@ -200,7 +179,7 @@ class MaintenanceService:
         asset_id: str        = window_payload["asset_id"]
         features: list       = window_payload["features"]
         interp_pct: float    = float(window_payload.get("interpolation_pct", 0.0))
-        timestamp_utc: str   = window_payload.get("timestamp_utc", _now_iso())
+        timestamp_utc: str   = window_payload.get("timestamp_utc", now_iso())
 
         # Build tensor (1, 1800, 8)
         tensor = torch.tensor(features, dtype=torch.float32).unsqueeze(0)  # (1, seq, 8)
@@ -379,8 +358,7 @@ def infer(window_payload: dict) -> dict:
 # ---------------------------------------------------------------------------
 # Utility
 # ---------------------------------------------------------------------------
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+
 
 
 # ---------------------------------------------------------------------------

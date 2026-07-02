@@ -9,16 +9,17 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sys
 from collections import defaultdict
-from datetime import datetime, timezone
 from typing import Any
 
 import numpy as np
 
-log = logging.getLogger(__name__)
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from common.kafka_utils import publish_alert
+from common.datetime_utils import now_iso
 
-KAFKA_BOOTSTRAP   = os.environ.get("KAFKA_BOOTSTRAP_SERVERS",
-                                    "railos-kafka-kafka-bootstrap.railos.svc.cluster.local:9092")
+log = logging.getLogger(__name__)
 PSI_THRESHOLD     = float(os.environ.get("PSI_DRIFT_CRITICAL_THRESHOLD", "0.2"))
 CONSECUTIVE_DAYS  = int(os.environ.get("DRIFT_CONSECUTIVE_DAYS", "3"))
 
@@ -93,13 +94,7 @@ def _emit_drift_alert(model_id: str, psi_score: float, consecutive: int) -> None
         "psiScore":            psi_score,
         "consecutiveDays":     consecutive,
         "threshold":           PSI_THRESHOLD,
-        "timestamp_utc":       datetime.now(timezone.utc).isoformat(),
+        "timestamp_utc":       now_iso(),
     }
     log.warning("MODEL_DRIFT_ALERT: %s", json.dumps(payload))
-    try:
-        from kafka import KafkaProducer
-        p = KafkaProducer(bootstrap_servers=KAFKA_BOOTSTRAP, acks="all", retries=3)
-        p.send("monitoring.alerts", value=json.dumps(payload).encode())
-        p.flush(timeout=5)
-    except Exception as exc:
-        log.warning("Kafka emit failed: %s", exc)
+    publish_alert(payload)

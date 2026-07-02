@@ -7,8 +7,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sys
 import uuid
-from datetime import datetime, timezone
 from typing import Any, Optional
 
 import uvicorn
@@ -16,8 +16,11 @@ from fastapi import FastAPI, HTTPException
 from prometheus_client import start_http_server
 from pydantic import BaseModel
 
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from common.db_utils import pg_connection
+from common.datetime_utils import now_iso
+
 log = logging.getLogger(__name__)
-DB_URL       = os.environ.get("DB_URL", "postgresql://railos:change-me@postgresql-primary.railos.svc.cluster.local:5432/railos")
 APP_PORT     = int(os.environ.get("APP_PORT", "8087"))
 METRICS_PORT = int(os.environ.get("METRICS_PORT", "8080"))
 
@@ -55,7 +58,7 @@ def create_record(rec: TraceabilityRecord) -> dict:
         "mlflowRunId":     rec.mlflowRunId,
         "deployedVersion": rec.subsystemVersion,
         "result":          rec.evidenceResult,
-        "timestamp_utc":   datetime.now(timezone.utc).isoformat(),
+        "timestamp_utc":   now_iso(),
     }
     try:
         _write_to_db(entry)
@@ -78,15 +81,13 @@ def get_report(subsystem_version: str) -> dict:
     return {
         "subsystemVersion": subsystem_version,
         "requirements":     records,
-        "generatedAt":      datetime.now(timezone.utc).isoformat(),
+        "generatedAt":      now_iso(),
     }
 
 
 def _write_to_db(entry: dict) -> None:
     """Write traceability entry to DB. Raises on failure so callers can report errors."""
-    import psycopg2
-    conn = psycopg2.connect(DB_URL)
-    try:
+    with pg_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -100,19 +101,11 @@ def _write_to_db(entry: dict) -> None:
                  entry.get("mlflowRunId"), entry.get("deployedVersion"),
                  entry["result"], entry["timestamp_utc"]),
             )
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
 
 
 def _query_db(version: str) -> list[dict]:
     """Query traceability records. Raises on failure so callers can report errors."""
-    import psycopg2
-    conn = psycopg2.connect(DB_URL)
-    try:
+    with pg_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT trace_id, requirement_id, result FROM traceability_matrix "
@@ -121,8 +114,6 @@ def _query_db(version: str) -> list[dict]:
             )
             rows = cur.fetchall()
         return [{"traceId": r[0], "requirementId": r[1], "result": r[2]} for r in rows]
-    finally:
-        conn.close()
 
 
 if __name__ == "__main__":

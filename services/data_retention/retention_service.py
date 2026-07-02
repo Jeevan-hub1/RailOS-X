@@ -5,19 +5,21 @@ Satisfies: Req 28, Design §10.4
 """
 from __future__ import annotations
 
-import json
 import logging
 import os
+import sys
 import uuid
-from datetime import datetime, timezone
 from typing import Optional
 
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from common.db_utils import pg_connection
+from common.datetime_utils import now_iso
+
 log = logging.getLogger(__name__)
-DB_URL   = os.environ.get("DB_URL", "postgresql://railos:change-me@postgresql-primary.railos.svc.cluster.local:5432/railos")
 APP_PORT = int(os.environ.get("APP_PORT", "8089"))
 
 # Default retention TTLs in days (Task 30.1)
@@ -56,7 +58,7 @@ def place_forensic_hold(req: ForensicHoldRequest) -> dict:
         "timeRange":  req.timeRange,
         "placedBy":   req.placedBy,
         "reason":     req.reason,
-        "placedAt":   datetime.now(timezone.utc).isoformat(),
+        "placedAt":   now_iso(),
         "active":     True,
     }
     try:
@@ -83,7 +85,7 @@ def release_forensic_hold(hold_id: str, released_by: str) -> dict:
 def monthly_compliance_report() -> dict:
     """Generate monthly data retention compliance report (Task 30.4)."""
     report = {
-        "generatedAt":  datetime.now(timezone.utc).isoformat(),
+        "generatedAt":  now_iso(),
         "categories":   {},
         "overdue":      [],
         "activeHolds":  0,
@@ -119,9 +121,7 @@ def run_retention_cycle() -> dict:
 
 def _insert_hold(record: dict) -> None:
     """Insert forensic hold. Raises on failure so callers can report errors."""
-    import psycopg2
-    conn = psycopg2.connect(DB_URL)
-    try:
+    with pg_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 "INSERT INTO forensic_holds "
@@ -130,44 +130,25 @@ def _insert_hold(record: dict) -> None:
                 (record["holdId"], record.get("alertId"), record["placedBy"],
                  record["reason"], record["placedAt"], True),
             )
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
 
 
 def _release_hold(hold_id: str, released_by: str) -> None:
     """Release forensic hold. Raises on failure so callers can report errors."""
-    import psycopg2
-    conn = psycopg2.connect(DB_URL)
-    try:
+    with pg_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 "UPDATE forensic_holds SET active=FALSE, released_by=%s, released_at=%s "
                 "WHERE hold_id=%s",
-                (released_by, datetime.now(timezone.utc).isoformat(), hold_id),
+                (released_by, now_iso(), hold_id),
             )
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
 
 
 def _count_active_holds() -> int:
     """Count active forensic holds. Raises on failure."""
-    import psycopg2
-    conn = psycopg2.connect(DB_URL)
-    try:
+    with pg_connection() as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT COUNT(*) FROM forensic_holds WHERE active=TRUE")
-            count = cur.fetchone()[0]
-        return count
-    finally:
-        conn.close()
+            return cur.fetchone()[0]
 
 
 if __name__ == "__main__":

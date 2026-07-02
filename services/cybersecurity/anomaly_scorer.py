@@ -9,23 +9,23 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sys
 import tarfile
-import time
 import uuid
-from datetime import datetime, timezone
 from io import BytesIO
-from typing import Any, Optional
-import numpy as np
+from typing import Optional
 import torch
 from prometheus_client import Counter, start_http_server
 
 from .lstm_autoencoder import LSTMAutoencoder
 
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from common.minio_client import make_minio_client, FORENSIC_BUCKET as _FORENSIC_BUCKET
+from common.logging_config import configure_logging
+from common.datetime_utils import now_iso
+
+configure_logging()
 log = logging.getLogger(__name__)
-logging.basicConfig(
-    level=logging.INFO,
-    format='{"ts":"%(asctime)s","level":"%(levelname)s","msg":"%(message)s"}',
-)
 
 # ── Config ──────────────────────────────────────────────────────────────────────
 KAFKA_BOOTSTRAP     = os.environ.get("KAFKA_BOOTSTRAP_SERVERS",
@@ -35,10 +35,7 @@ SECURITY_TOPIC      = "security.anomalies"
 ALERT_TOPIC         = "monitoring.alerts"
 MSE_THRESHOLD       = float(os.environ.get("MSE_THRESHOLD", "0.05"))
 MODEL_PATH          = os.environ.get("MODEL_PATH", "/models/lstm_autoencoder_v1.0.0.pt")
-MINIO_ENDPOINT      = os.environ.get("MINIO_ENDPOINT", "http://minio.railos.svc.cluster.local:9000")
-MINIO_ACCESS_KEY    = os.environ.get("MINIO_ACCESS_KEY", "railos-admin")
-MINIO_SECRET_KEY    = os.environ.get("MINIO_SECRET_KEY", "change-me")
-FORENSIC_BUCKET     = os.environ.get("FORENSIC_BUCKET", "railos-forensic-evidence")
+
 IEC62443_ZONE       = os.environ.get("IEC62443_ZONE", "Zone-2")
 METRICS_PORT        = int(os.environ.get("METRICS_PORT", "8080"))
 
@@ -104,7 +101,7 @@ class SCADAAnomalyDetector:
                 "alertId":          alert_id,
                 "alertType":        "SECURITY_ANOMALY",
                 "iec62443Zone":     IEC62443_ZONE,
-                "timestamp_utc":    datetime.now(timezone.utc).isoformat(),
+                "timestamp_utc":    now_iso(),
                 "reconstructionError": round(mse, 6),
                 "threshold":        MSE_THRESHOLD,
                 "acknowledged":     False,
@@ -124,16 +121,7 @@ class SCADAAnomalyDetector:
     ) -> None:
         """Write forensic evidence to MinIO WORM bucket (Task 12.4)."""
         try:
-            import boto3
-            from botocore.config import Config
-
-            s3 = boto3.client(
-                "s3",
-                endpoint_url=MINIO_ENDPOINT,
-                aws_access_key_id=MINIO_ACCESS_KEY,
-                aws_secret_access_key=MINIO_SECRET_KEY,
-                config=Config(signature_version="s3v4"),
-            )
+            s3 = make_minio_client()
 
             # Build tarball in-memory
             buf = BytesIO()
@@ -153,9 +141,9 @@ class SCADAAnomalyDetector:
 
             buf.seek(0)
             key = f"{alert_id}.tar.gz"
-            s3.put_object(Bucket=FORENSIC_BUCKET, Key=key, Body=buf.read())
+            s3.put_object(Bucket=_FORENSIC_BUCKET, Key=key, Body=buf.read())
             forensic_captures.inc()
-            log.info("Forensic evidence captured: s3://%s/%s", FORENSIC_BUCKET, key)
+            log.info("Forensic evidence captured: s3://%s/%s", _FORENSIC_BUCKET, key)
 
         except Exception as exc:
             log.error("Forensic capture failed (non-fatal): %s", exc)

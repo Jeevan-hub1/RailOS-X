@@ -29,14 +29,6 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-# Graceful fallback for environments without kafka-python (unit tests on Windows)
-try:
-    from kafka import KafkaProducer
-    from kafka.errors import KafkaError
-except ImportError:  # pragma: no cover
-    KafkaProducer = None  # type: ignore[assignment,misc]
-    KafkaError = Exception  # type: ignore[assignment,misc]
-
 try:
     import httpx
 except ImportError:  # pragma: no cover
@@ -45,10 +37,13 @@ except ImportError:  # pragma: no cover
 # Add shared library to path when running as a standalone container
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(_HERE, ".."))
+sys.path.insert(0, os.path.join(_HERE, "..", ".."))
 
 from shared.canonical_event import CanonicalEvent, QualityFlags
 from shared.dead_letter import DeadLetterRouter
 from shared.prometheus_metrics import make_metrics, start_metrics_server
+from common.kafka_utils import make_kafka_producer, KafkaError
+from common.logging_config import configure_logging
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 NTES_API_URL         = os.environ.get("NTES_API_URL", "http://ntes-api.railos.svc.cluster.local")
@@ -59,25 +54,14 @@ ADAPTER_NAME         = "ntes"
 ADAPTER_VERSION      = os.environ.get("ADAPTER_VERSION", "1.0.0")
 METRICS_PORT         = int(os.environ.get("METRICS_PORT", "8080"))
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='{"ts":"%(asctime)s","level":"%(levelname)s","logger":"%(name)s","msg":"%(message)s"}',
-    datefmt="%Y-%m-%dT%H:%M:%S",
-)
+configure_logging()
 log = logging.getLogger("ntes-adapter")
 
 
 # ── Kafka producer factory ─────────────────────────────────────────────────────
 
 def make_producer() -> Any:
-    if KafkaProducer is None:
-        raise RuntimeError("kafka-python is not installed")
-    return KafkaProducer(
-        bootstrap_servers=KAFKA_BOOTSTRAP,
-        acks="all",
-        retries=3,
-        retry_backoff_ms=500,
-    )
+    return make_kafka_producer(bootstrap_servers=KAFKA_BOOTSTRAP)
 
 
 # ── NTES normalisation ─────────────────────────────────────────────────────────

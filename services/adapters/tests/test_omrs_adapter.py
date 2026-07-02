@@ -142,10 +142,10 @@ class TestOmrsReadFrame:
         assert result == payload
 
     def test_read_frame_eof_raises(self) -> None:
-        from omrs.omrs_adapter import _recv_exactly
+        from shared.socket_helpers import recv_exactly
         fake_sock = _FakeSocket(b"")
         with pytest.raises(EOFError):
-            _recv_exactly(fake_sock, 4)  # type: ignore[arg-type]
+            recv_exactly(fake_sock, 4)  # type: ignore[arg-type]
 
 
 # ── 2. Dead-letter routing after 3 failures ───────────────────────────────────

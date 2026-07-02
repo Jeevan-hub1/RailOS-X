@@ -13,7 +13,7 @@ Enhanced features:
 Satisfies: Req 12, Req 30, Req 40, Design section 12
 """
 from __future__ import annotations
-import json, logging, os, threading, time, uuid
+import json, logging, os, sys, threading, time, uuid
 from collections import OrderedDict, deque
 from datetime import datetime, timezone
 from typing import Optional
@@ -23,9 +23,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import Counter, Gauge, Histogram, start_http_server
 from pydantic import BaseModel
 
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from common.risk_scoring import compute_risk_score as _compute_risk_score, compute_risk_tier, SEVERITY_WEIGHTS
+from common.logging_config import configure_logging
+from common.datetime_utils import now_iso
+
+configure_logging()
 log = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO,
-    format='{"ts":"%(asctime)s","level":"%(levelname)s","msg":"%(message)s"}')
 
 KAFKA_BOOTSTRAP = os.environ.get("KAFKA_BOOTSTRAP_SERVERS",
     "railos-kafka-kafka-bootstrap.railos.svc.cluster.local:9092")
@@ -111,16 +115,12 @@ KNOWN_CONTROLLERS = {
 }
 
 # ── Risk scoring ─────────────────────────────────────────────────────────────
-SEVERITY_WEIGHTS = {"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1}
-
 def compute_risk_score(probability: float, severity: str) -> float:
     w = SEVERITY_WEIGHTS.get(severity.upper(), 1)
-    return min(4.0, max(0.0, probability * w))
+    return _compute_risk_score(probability, w)
 
 def risk_tier(score: float) -> int:
-    if score >= 3.2: return 1
-    if score >= 2.0: return 2
-    return 3
+    return compute_risk_tier(score)
 
 # ── Advisory queue ───────────────────────────────────────────────────────────
 class _QueuedAdvisory:
@@ -133,7 +133,7 @@ class _QueuedAdvisory:
         self.risk_score = score
         self.risk_tier = tier
         self.created_at = time.monotonic()
-        self.created_utc = datetime.now(timezone.utc).isoformat()
+        self.created_utc = now_iso()
         self.first_auth_by = None
         self.first_auth_at = None
         self.escalated = False
@@ -339,7 +339,7 @@ def _record_decision(advisory_id, action, controller_id, controller_info, qa, de
     entry = {"auditId": str(uuid.uuid4()), "advisoryId": advisory_id, "action": action,
              "controllerId": controller_id, "controllerName": controller_info.get("name", ""),
              "controllerRole": controller_info.get("role", ""),
-             "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+             "timestamp_utc": now_iso(),
              "riskTier": qa.risk_tier, "riskScore": round(qa.risk_score, 2),
              "decisionTimeS": round(decision_time_s, 1), "reason": reason,
              "wasEscalated": qa.escalated}

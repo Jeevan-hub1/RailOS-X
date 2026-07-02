@@ -5,19 +5,21 @@ Satisfies: Req 36, Design §13.2
 """
 from __future__ import annotations
 
-import json
 import logging
 import os
+import sys
 import uuid
-from datetime import datetime, timezone
 from typing import Optional
 
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from common.db_utils import pg_connection
+from common.datetime_utils import now_iso
+
 log = logging.getLogger(__name__)
-DB_URL   = os.environ.get("DB_URL", "postgresql://railos:change-me@postgresql-primary.railos.svc.cluster.local:5432/railos")
 APP_PORT = int(os.environ.get("APP_PORT", "8088"))
 
 app = FastAPI(title="RailOS Hazard Register", docs_url=None)
@@ -57,7 +59,7 @@ def create_hazard(entry: HazardEntry) -> dict:
         "approval_status": entry.approvalStatus,
         "evidence_ref":  entry.evidenceRef,
         "created_by":    entry.createdBy,
-        "created_at":    datetime.now(timezone.utc).isoformat(),
+        "created_at":    now_iso(),
     }
     try:
         _insert_hazard(record)
@@ -88,9 +90,7 @@ def flag_for_review(payload: dict) -> dict:
 
 def _insert_hazard(record: dict) -> None:
     """Insert hazard record. Raises on failure so callers can report errors."""
-    import psycopg2
-    conn = psycopg2.connect(DB_URL)
-    try:
+    with pg_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -105,19 +105,11 @@ def _insert_hazard(record: dict) -> None:
                  record["residual_risk"], record["mitigation"], record.get("evidence_ref"),
                  record["approval_status"], record["created_at"], record["created_by"]),
             )
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
 
 
 def _query_hazards(subsystem: Optional[str] = None) -> list[dict]:
     """Query hazard records. Raises on failure so callers can report errors."""
-    import psycopg2
-    conn = psycopg2.connect(DB_URL)
-    try:
+    with pg_connection() as conn:
         with conn.cursor() as cur:
             if subsystem:
                 cur.execute(
@@ -132,8 +124,6 @@ def _query_hazards(subsystem: Optional[str] = None) -> list[dict]:
             rows = cur.fetchall()
         return [{"hazardId": r[0], "description": r[1], "approvalStatus": r[2]}
                 for r in rows]
-    finally:
-        conn.close()
 
 
 if __name__ == "__main__":
