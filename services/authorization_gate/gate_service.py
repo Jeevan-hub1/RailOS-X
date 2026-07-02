@@ -115,7 +115,7 @@ KNOWN_CONTROLLERS = {
 }
 
 # ── Risk scoring ─────────────────────────────────────────────────────────────
-def _gate_risk_score(probability: float, severity: str) -> float:
+def compute_risk_score(probability: float, severity: str) -> float:
     w = SEVERITY_WEIGHTS.get(severity.upper(), 1)
     return _compute_risk_score(probability, w)
 
@@ -190,7 +190,7 @@ def health():
 @app.post("/api/v1/gate/enqueue")
 def enqueue_advisory(req: EnqueueRequest):
     global _queue_dirty
-    score = _gate_risk_score(req.probability, req.severity)
+    score = compute_risk_score(req.probability, req.severity)
     tier = risk_tier(score)
     qa = _QueuedAdvisory(req.advisoryId, req.payload, score, tier, req.severity, req.source)
     with _queue_lock:
