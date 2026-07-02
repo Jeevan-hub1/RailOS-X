@@ -575,7 +575,12 @@ def create_app() -> "FastAPI":
     from pydantic import BaseModel
 
     app = FastAPI(title=f"RailOS Micro-Edge Sensor Hub ({NODE_ID})", docs_url=None)
-    app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+    _allowed_origins = os.environ.get(
+        "CORS_ALLOWED_ORIGINS",
+        "http://localhost:3000,http://localhost:3001",
+    ).split(",")
+    app.add_middleware(CORSMiddleware, allow_origins=_allowed_origins,
+                       allow_methods=["GET", "POST"], allow_headers=["Authorization", "Content-Type"])
 
     hub = SensorHub()
 

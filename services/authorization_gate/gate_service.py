@@ -155,8 +155,12 @@ _audit_log: deque = deque(maxlen=100)
 
 # ── FastAPI App ──────────────────────────────────────────────────────────────
 app = FastAPI(title="RailOS Authorization Gate", docs_url=None, redoc_url=None)
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True,
-                   allow_methods=["*"], allow_headers=["*"])
+_ALLOWED_ORIGINS = os.environ.get(
+    "CORS_ALLOWED_ORIGINS",
+    "http://localhost:3000,http://localhost:3001",
+).split(",")
+app.add_middleware(CORSMiddleware, allow_origins=_ALLOWED_ORIGINS, allow_credentials=True,
+                   allow_methods=["GET", "POST"], allow_headers=["Authorization", "Content-Type"])
 
 class AuthorizeRequest(BaseModel):
     advisoryId: str
