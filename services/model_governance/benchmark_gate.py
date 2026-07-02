@@ -10,13 +10,13 @@ from __future__ import annotations
 import json
 import logging
 import os
-from datetime import datetime, timezone
-from typing import Any
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from common.kafka_utils import publish_alert
+from common.datetime_utils import now_iso
 
 log = logging.getLogger(__name__)
-
-KAFKA_BOOTSTRAP   = os.environ.get("KAFKA_BOOTSTRAP_SERVERS",
-                                    "railos-kafka-kafka-bootstrap.railos.svc.cluster.local:9092")
 REGRESSION_THRESHOLD = float(os.environ.get("REGRESSION_THRESHOLD", "0.05"))  # 5%
 MODEL_ID          = os.environ.get("MODEL_ID", "")
 CANDIDATE_VERSION = os.environ.get("CANDIDATE_VERSION", "")
@@ -30,16 +30,10 @@ def emit_regression_alert(model_id: str, metric: str, deployed: float, candidate
         "deployedValue":    deployed,
         "candidateValue":   candidate,
         "degradationPct":   round(abs(candidate - deployed) / max(abs(deployed), 1e-9) * 100, 2),
-        "timestamp_utc":    datetime.now(timezone.utc).isoformat(),
+        "timestamp_utc":    now_iso(),
     }
     log.error("REGRESSION_DETECTED: %s", json.dumps(payload))
-    try:
-        from kafka import KafkaProducer
-        p = KafkaProducer(bootstrap_servers=KAFKA_BOOTSTRAP, acks="all", retries=3)
-        p.send("monitoring.alerts", value=json.dumps(payload).encode())
-        p.flush(timeout=5)
-    except Exception as exc:
-        log.warning("Kafka emit failed: %s", exc)
+    publish_alert(payload)
 
 
 def check_regression(model_id: str, metric: str, deployed: float, candidate: float) -> bool:

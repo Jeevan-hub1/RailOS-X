@@ -44,21 +44,17 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-# Graceful fallback for environments without kafka-python (unit tests on Windows)
-try:
-    from kafka import KafkaProducer
-    from kafka.errors import KafkaError
-except ImportError:  # pragma: no cover
-    KafkaProducer = None  # type: ignore[assignment,misc]
-    KafkaError = Exception  # type: ignore[assignment,misc]
-
 # Add shared library to path when running as a standalone container
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(_HERE, ".."))
+sys.path.insert(0, os.path.join(_HERE, "..", ".."))
 
 from shared.canonical_event import CanonicalEvent, QualityFlags
 from shared.dead_letter import DeadLetterRouter
 from shared.prometheus_metrics import make_metrics, start_metrics_server
+from shared.socket_helpers import recv_exactly
+from common.kafka_utils import make_kafka_producer, KafkaError
+from common.logging_config import configure_logging
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 WILD_HOST            = os.environ.get("WILD_HOST", "wild-stream.railos.svc.cluster.local")
@@ -76,39 +72,17 @@ WILD_RECORD_FORMAT   = ">8sQB3x8f12x"
 WILD_RECORD_SIZE     = struct.calcsize(WILD_RECORD_FORMAT)  # must be 64
 assert WILD_RECORD_SIZE == 64, f"WILD record size mismatch: {WILD_RECORD_SIZE} != 64"
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='{"ts":"%(asctime)s","level":"%(levelname)s","logger":"%(name)s","msg":"%(message)s"}',
-    datefmt="%Y-%m-%dT%H:%M:%S",
-)
+configure_logging()
 log = logging.getLogger("wild-adapter")
 
 
 # ── Kafka producer factory ─────────────────────────────────────────────────────
 
 def make_producer() -> Any:
-    if KafkaProducer is None:
-        raise RuntimeError("kafka-python is not installed")
-    return KafkaProducer(
-        bootstrap_servers=KAFKA_BOOTSTRAP,
-        acks="all",
-        retries=3,
-        retry_backoff_ms=500,
-    )
+    return make_kafka_producer(bootstrap_servers=KAFKA_BOOTSTRAP)
 
 
 # ── Socket I/O helpers ─────────────────────────────────────────────────────────
-
-def _recv_exactly(sock: socket.socket, n: int) -> bytes:
-    """Read exactly *n* bytes from *sock*, raising EOFError on disconnect."""
-    buf = bytearray()
-    while len(buf) < n:
-        chunk = sock.recv(n - len(buf))
-        if not chunk:
-            raise EOFError("Connection closed by WILD server")
-        buf.extend(chunk)
-    return bytes(buf)
-
 
 def read_wild_record(sock: socket.socket) -> bytes:
     """
@@ -117,7 +91,7 @@ def read_wild_record(sock: socket.socket) -> bytes:
     Returns the raw record bytes.
     Raises EOFError if the connection is closed, socket.error on I/O error.
     """
-    return _recv_exactly(sock, WILD_RECORD_SIZE)
+    return recv_exactly(sock, WILD_RECORD_SIZE)
 
 
 # ── WILD normalisation ─────────────────────────────────────────────────────────
