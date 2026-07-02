@@ -133,8 +133,8 @@ class ModelRegistry:
                         info.input_shape = list(inputs[0].shape) if inputs[0].shape else []
                     if outputs:
                         info.output_shape = list(outputs[0].shape) if outputs[0].shape else []
-                except Exception:
-                    pass
+                except Exception as exc:
+                    log.warning("Could not extract model shape for %s: %s", key, exc)
 
             self._models[key] = info
             self._sessions[key] = session
@@ -252,7 +252,8 @@ class ModelRegistry:
                 for chunk in iter(lambda: f.read(8192), b''):
                     h.update(chunk)
             return h.hexdigest()[:16]
-        except Exception:
+        except Exception as exc:
+            log.warning("Checksum computation failed for %s: %s", path, exc)
             return "unavailable"
 
 

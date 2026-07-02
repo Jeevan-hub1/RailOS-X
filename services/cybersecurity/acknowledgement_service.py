@@ -91,16 +91,23 @@ def acknowledge_anomaly(alert_id: str, req: AckRequest) -> dict:
         "notes":         req.notes,
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
     }
-    _write_audit_log(record)
+    try:
+        _write_audit_log(record)
+    except Exception as exc:
+        log.error("Could not write to security_audit table: %s", exc)
+        raise HTTPException(status_code=503, detail="Audit record could not be persisted")
     log.info("SECURITY_ANOMALY acknowledged: alert_id=%s officer=%s", alert_id, req.officerId)
     return {"status": "acknowledged", "auditId": record["auditId"]}
 
 
 def _write_audit_log(record: dict) -> None:
-    """Write to append-only security_audit PostgreSQL table (Task 12.8)."""
+    """Write to append-only security_audit PostgreSQL table (Task 12.8).
+
+    Raises on failure so callers can report the error.
+    """
+    import psycopg2
+    conn = psycopg2.connect(DB_URL)
     try:
-        import psycopg2
-        conn = psycopg2.connect(DB_URL)
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -112,9 +119,11 @@ def _write_audit_log(record: dict) -> None:
                  record["officerId"], record.get("notes"), record["timestamp_utc"]),
             )
         conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
         conn.close()
-    except Exception as exc:
-        log.error("Could not write to security_audit table: %s", exc)
 
 
 if __name__ == "__main__":

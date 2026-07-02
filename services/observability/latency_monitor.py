@@ -144,7 +144,8 @@ async def ingest_spans(request: Request) -> dict:
 
     try:
         body = await request.json()
-    except Exception:
+    except Exception as exc:
+        log.warning("Invalid JSON in span batch: %s", exc)
         return {"accepted": 0}
 
     spans: list[dict] = body if isinstance(body, list) else body.get("spans", [])
