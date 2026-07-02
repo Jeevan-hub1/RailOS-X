@@ -408,7 +408,12 @@ class StationAggregator:
 # ══════════════════════════════════════════════════════════════════════════════
 
 app = FastAPI(title=f"RailOS Station Edge ({STATION_ID})", docs_url=None)
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+_ALLOWED_ORIGINS = os.environ.get(
+    "CORS_ALLOWED_ORIGINS",
+    "http://localhost:3000,http://localhost:3001",
+).split(",")
+app.add_middleware(CORSMiddleware, allow_origins=_ALLOWED_ORIGINS,
+                   allow_methods=["GET", "POST"], allow_headers=["Authorization", "Content-Type"])
 
 aggregator = StationAggregator()
 

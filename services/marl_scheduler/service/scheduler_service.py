@@ -406,8 +406,12 @@ class DisruptionEvent(BaseModel):
 
 
 app = FastAPI(title="RailOS MARL Scheduler", docs_url=None, redoc_url=None)
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True,
-                   allow_methods=["*"], allow_headers=["*"])
+_ALLOWED_ORIGINS = os.environ.get(
+    "CORS_ALLOWED_ORIGINS",
+    "http://localhost:3000,http://localhost:3001",
+).split(",")
+app.add_middleware(CORSMiddleware, allow_origins=_ALLOWED_ORIGINS, allow_credentials=True,
+                   allow_methods=["GET", "POST"], allow_headers=["Authorization", "Content-Type"])
 
 
 @app.on_event("startup")

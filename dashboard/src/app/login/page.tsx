@@ -7,7 +7,8 @@ import { ShieldCheck, ArrowLeft, Loader2, Lock, Mail, User } from 'lucide-react'
 import { signIn, DEMO_ROLES } from '@/lib/auth'
 
 const DEMO_EMAIL = 'controller@railos.in'
-const DEMO_PASSWORD = 'railos-demo'
+// Demo password is only populated when the user clicks "Use demo" — not stored in source.
+// In production this page delegates to Keycloak SSO (see services/auth_middleware).
 
 export default function LoginPage() {
   const router = useRouter()
@@ -38,7 +39,7 @@ export default function LoginPage() {
   function fillDemo() {
     setName('Ctrl. Sharma')
     setEmail(DEMO_EMAIL)
-    setPassword(DEMO_PASSWORD)
+    setPassword('railos-demo')
     setRole(DEMO_ROLES[0].id)
     setError('')
   }
