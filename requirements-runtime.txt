@@ -4,7 +4,7 @@
 # excluded — services that need them are run natively for now.
 fastapi==0.138.2
 uvicorn==0.49.0
-pydantic>=2.7.0
+pydantic>=2.13.4
 numpy==1.26.4
 kafka-python==3.0.7
 influxdb-client==1.50.0
