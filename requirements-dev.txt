@@ -12,7 +12,7 @@ pydantic>=2.7.0
 # ── ML / Data Science (CPU-only for local dev) ───────────────────────────────
 torch==2.12.1
 numpy==1.26.4
-pillow==10.3.0
+pillow==12.3.0
 
 # ── Messaging & Data ─────────────────────────────────────────────────────────
 kafka-python==3.0.7
