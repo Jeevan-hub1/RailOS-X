@@ -5,8 +5,8 @@
 # are optional — the core services and tests run without them.
 
 # ── Core Web Framework ────────────────────────────────────────────────────────
-fastapi==0.138.2
-uvicorn==0.49.0
+fastapi==0.139.0
+uvicorn==0.50.2
 pydantic>=2.7.0
 
 # ── ML / Data Science (CPU-only for local dev) ───────────────────────────────
@@ -40,7 +40,7 @@ jsonschema==4.26.0
 # ── Testing ──────────────────────────────────────────────────────────────────
 pytest==9.1.1
 pytest-asyncio==1.4.0
-hypothesis==6.155.7
+hypothesis==6.156.1
 
 # ── Lint / Security tooling ──────────────────────────────────────────────────
 ruff==0.15.20
