@@ -2,16 +2,16 @@
 # Used by the generic service image (Dockerfile). Heavy ML packages
 # (torch, mlflow, shap, ultralytics, torch-geometric, flwr) are intentionally
 # excluded — services that need them are run natively for now.
-fastapi==0.138.2
-uvicorn==0.49.0
+fastapi==0.140.8
+uvicorn==0.51.0
 pydantic>=2.7.0
 numpy==1.26.4
-kafka-python==3.0.7
+kafka-python==3.0.9
 influxdb-client==1.50.0
 psycopg2-binary==2.9.12
 redis==5.0.4
-prometheus-client==0.25.0
+prometheus-client==0.26.0
 httpx==0.28.1
-aiohttp==3.14.1
+aiohttp==3.14.3
 jsonschema==4.26.0
 python-jose[cryptography]==3.5.0
